@@ -1,0 +1,24 @@
+[local-el5-Cluster]
+name=el5 Cluster
+baseurl=file:///media/Cluster
+gpgcheck=0
+enabled=1
+
+[local-el5-ClusterStorage]
+name=el5 ClusterStorage
+baseurl=file:///media/ClusterStorage
+gpgcheck=0
+enabled=1
+
+[local-el5-Server]
+name=el5 Server
+baseurl=file:///media/Server
+gpgcheck=0
+enabled=1
+
+[local-el5-VT]
+name=el5 VT
+baseurl=file:///media/VT
+gpgcheck=0
+enabled=1
+
