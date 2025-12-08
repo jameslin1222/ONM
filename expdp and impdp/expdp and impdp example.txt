@@ -1,0 +1,5 @@
+匯出範例: (只要指定schema即可)
+expdp system/oracle@jamesdb DUMPFILE=hr.backup DIRECTORY=DATA_PUMP_DIR schemas=hr
+
+匯入範例: (把schema從 hr 轉換到 james )
+impdp system/oracle DUMPFILE=hr.backup DIRECTORY=DATA_PUMP_DIR remap_schema=hr:james
