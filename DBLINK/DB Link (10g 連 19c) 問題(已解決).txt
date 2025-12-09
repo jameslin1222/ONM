@@ -1,0 +1,57 @@
+DB Link (10g 連 19c) 問題(已解決)
+
+1. 版本不相容問題
+ERROR at line 1:
+ORA-01031: insufficient privileges
+
+要在19c Server那邊設置 sqlnet.ora
+$ cd $ORACLE_HOME/network/admin/
+$ vi sqlnet.ora
+======
+SQLNET.ALLOWED_LOGON_VERSION_SERVER=8
+SQLNET.ALLOWED_LOGON_VERSION_CLIENT=8
+======
+重啟 listener
+$ lsnrctl stop
+$ lsnrctl start
+
+
+2.版本不相容問題，要重新在19c Server那邊改密碼雜湊能相容舊版
+ERROR:
+ORA-01017: invalid username/password; logon denied
+
+sqlplus / as sysdba
+show pdbs
+alter session set container=jamespdb1;
+alter user hr identified by hr account unlock;
+
+
+===DBLINK 建立方式 ================
+注意: DBLINK不能透過 GRANT 方式建立，只能用 PUBLIC 或使用者本身私人建立
+(ref: https://docs.oracle.com/cd/B19306_01/server.102/b14200/statements_5005.htm)
+
+# 1- 10g client那邊tnsnames.ora新增
+~~~
+PLM13 =
+  (DESCRIPTION =
+    (ADDRESS = (PROTOCOL = TCP)(HOST = 192.168.56.19)(PORT = 1521))
+    (CONNECT_DATA =
+      (SERVER = DEDICATED)
+      (SERVICE_NAME = jamespdb1)
+    )
+  )
+
+~~~
+
+
+# 2- 然後測試連接到 19c Server
+sqlplus hr/hr@PLM13
+exit
+
+# 3- 接著10g那邊進入建立DB Link，然後測試 (注意: 私人連線只能私人連入建立,無法透過DBA授權或建schema方式)
+$ sqlplus hr/hr
+
+CREATE DATABASE LINK plm999 CONNECT TO hr IDENTIFIED BY hr USING 'PLM13';
+select * from dual@plm999;
+
+
