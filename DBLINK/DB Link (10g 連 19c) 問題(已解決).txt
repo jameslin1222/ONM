@@ -71,6 +71,10 @@ WHERE
 
 
 2. 上述測試檢查都成功，DBLINK卻仍無法連接出現錯誤
+ERROR at line 1:
+ORA-01017: invalid username/password; logon denied
+ORA-02063: preceding line from PLM999
+
 注意如果用sqlplus 做10g連19c的DBLINK，如果還出現錯誤，可能因為密碼有大小之分，故密碼那邊補一下雙引號 (SQL Developer不需要)
 ex: CREATE DATABASE LINK plm999 CONNECT TO hr IDENTIFIED BY "hr" USING 'PLM13';
 
