@@ -55,3 +55,57 @@ CREATE DATABASE LINK plm999 CONNECT TO hr IDENTIFIED BY hr USING 'PLM13';
 select * from dual@plm999;
 
 
+
+=======================================================
+=== 補充: 
+1. Oracle 19c後密碼雜湊與 10g不相容，查詢password_version看是否有相容 10G 
+SELECT
+    username,
+    password_versions,
+    expiry_date
+FROM
+    dba_users
+WHERE
+    username = 'HR';
+
+
+
+2. 上述測試檢查都成功，DBLINK卻仍無法連接出現錯誤
+注意如果用sqlplus 做10g連19c的DBLINK，如果還出現錯誤，可能因為密碼有大小之分，故密碼那邊補一下雙引號 (SQL Developer不需要)
+ex: CREATE DATABASE LINK plm999 CONNECT TO hr IDENTIFIED BY "hr" USING 'PLM13';
+
+
+或是再重新在19c改密碼，確認雜湊
+ALTER USER hr IDENTIFIED BY hr;
+
+
+
+3. 如果有額外設置 sqlnet.ora ，查看是否有在白名單內以及10g不支援新的演算法 AES256/SHA256 等
+ex: 
+----  19c
+# 啟用加密與完整性檢查
+SQLNET.ENCRYPTION_SERVER = required
+SQLNET.ENCRYPTION_TYPES_SERVER = (AES256, AES192, AES128, 3DES168)
+
+SQLNET.CRYPTO_CHECKSUM_SERVER = required
+SQLNET.CRYPTO_CHECKSUM_TYPES_SERVER = (SHA256, SHA1)
+
+# 允許舊版客戶端（10g）登入
+SQLNET.ALLOWED_LOGON_VERSION_SERVER = 10
+
+# 範例：若要限制來源 IP
+TCP.VALIDNODE_CHECKING = YES
+TCP.INVITED_NODES = (192.168.56.10, 192.168.56.11, jamesdb) # 也可以DNS解析的主機名稱
+
+
+---- 10g (不需要設置,但這邊也補充一下安全的設置)
+# 啟用加密與完整性檢查
+SQLNET.ENCRYPTION_CLIENT = required
+SQLNET.ENCRYPTION_TYPES_CLIENT = (AES128, 3DES168)
+
+SQLNET.CRYPTO_CHECKSUM_CLIENT = required
+SQLNET.CRYPTO_CHECKSUM_TYPES_CLIENT = (SHA1)
+
+# 允許舊版登入（10g 自身）
+SQLNET.ALLOWED_LOGON_VERSION_CLIENT = 10
+
