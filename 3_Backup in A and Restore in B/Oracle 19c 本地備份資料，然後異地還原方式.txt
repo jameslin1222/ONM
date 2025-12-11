@@ -1,0 +1,176 @@
+Oracle 19c 本地備份資料，然後異地還原方式
+
+OS: Oracle Linux 8
+DB: Oracle Database 19.3
+
+假設都備份目錄位置都放在 /u02/backup/ 
+本地和異地都用相同環境變數，安裝DB軟體版本和patch都是相同(19.3)
+
+
+### 0.兩邊環境都同一樣
+0.1 假設環境變數如下:
+export ORACLE_BASE=/u01/app/oracle
+export ORACLE_HOME=$ORACLE_BASE/product/19.0.0/dbhome_1
+export ORA_INVENTORY=/u01/app/oraInventory
+export ORACLE_SID=jamescdb1
+export PDB_NAME=jamespdb1
+export DATA_DIR=/u02/oradata
+export PATH=$ORACLE_HOME/bin:$PATH
+
+export LD_LIBRARY_PATH=$ORACLE_HOME/lib:/lib:/usr/lib
+export CLASSPATH=$ORACLE_HOME/jlib:$ORACLE_HOME/rdbms/jlib
+export CV_ASSUME_DISTID=OEL7.6
+
+###################### 本地 BEGIN　###############################################
+0.2 查看 db_name=jamesdb (必須相同) 和 db_unique_name=jamesdb (異地可以不同)
+sqlplus / as sysdba
+SQL> show parameter db_name;
+
+0.3 查看 archive log是否開啟
+SQL> archive log list
+
+
+### 1.先切換logfile，儘量取得最近的資料 (假如已打開 archive log mode)
+sqlplus / as sysdba
+SQL> archive log list
+SQL> ALTER SYSTEM SWITCH LOGFILE;
+
+
+
+### 2.RMAN備份 data files、archive log files、control files、parameter file
+( 其中 %U 是 RMAN 的唯一檔名代碼，避免檔案名稱衝突)
+
+rman target /
+RMAN> BACKUP DATABASE FORMAT '/u02/backup/db_%U.bkp';
+RMAN> BACKUP ARCHIVELOG ALL FORMAT '/u02/backup/arch_%U.bkp';
+/* 上面可以用這個來替代: 
+RUN {
+  ALLOCATE CHANNEL c1 DEVICE TYPE DISK FORMAT '/u02/backup/full_%U.bkp';
+  BACKUP DATABASE PLUS ARCHIVELOG;
+  RELEASE CHANNEL c1;
+}
+*/
+
+RMAN> BACKUP CURRENT CONTROLFILE FORMAT '/u02/backup/ctl_%U.bkp';
+RMAN> BACKUP SPFILE FORMAT '/u02/backup/spfile_%U.bkp';
+
+
+### 3.驗證備份或測試還原
+RMAN> LIST BACKUP SUMMARY;
+RMAN> RESTORE DATABASE VALIDATE;
+
+
+### 4.把所有備份檔都傳至異地(或Storage掛載共用)
+scp /u02/backup/*.bkp oracle@192.168.56.20:/u02/backup
+
+
+###################### 本地 END ###############################################
+
+
+
+
+
+
+
+
+###################### 異地 BEGIN　###############################################
+
+### X1.建立orapwd(用來遠端可執行 sysdba) 以及建立最小必要的 init檔 (db_name長度不能超過8)
+orapwd file=$ORACLE_HOME/dbs/orapwjamesdb password=OraclePass12 format=12
+
+cat > $ORACLE_HOME/dbs/initjamesdb1.ora <<EOF
+db_name=jamesdb
+memory_target=2G
+control_files=/u02/oradata/control01.ctl
+diagnostic_dest=/u01/app/oracle
+EOF
+
+
+### X2.啟動到 NOMOUNT，還原 spfile
+sqlplus / as sysdba
+startup nomount pfile='$ORACLE_HOME/dbs/initjamesdb1.ora';
+exit
+
+
+rman target /
+-- 若需要，指定 DBID（通常不必，還原控制檔時可自動辨識）
+-- RMAN> set dbid <DBID>;
+
+RMAN> restore spfile from '/u02/backup/spfile_0o4b4313_1_1.bkp';
+RMAN> shutdown immediate;
+RMAN> startup nomount;  -- 此時已使用還原的 spfile
+
+### !!! 這邊可能會錯，因為audit目錄不存在，所以要去建 !!!
+mkdir -p /u01/app/oracle/admin/jamesdb/adump
+### !!! 然後再重新nomount
+
+
+### X3.還原控制檔並掛載，然後設置還原目錄
+RMAN> restore controlfile from '/u02/backup/ctl_0m4b430l_1_1.bkp';
+RMAN> alter database mount;
+RMAN> catalog start with '/u02/backup';
+YES
+
+
+### X4. 檢查 datafile 路徑，必要時重新分配映射- 列出 datafile 與 tempfile：
+RMAN> report schema;
+
+~~~!!!~~~
+若要改路徑則參考以下: (必須依照 列出的所有file# 來一個一個指定)
+RMAN> set newname for datafile 1 to '/u02/oradata/system01.dbf';
+RMAN> set newname for datafile 2 to '/u02/oradata/sysaux01.dbf';
+RMAN> set newname for datafile 3 to '/u02/oradata/undotbs01.dbf';
+RMAN> set newname for datafile 4 to '/u02/oradata/users01.dbf';
+
+~~~!!!~~~
+
+
+### X5. 還原資料庫  (若有改過路徑，就要切換檔案,switch XXX 要在RUN之下才能跑)
+RMAN> restore database;
+
+or
+~~~ !!! ~~~
+RUN {
+  RESTORE DATABASE;
+  SWITCH DATAFILE ALL;
+  SWITCH TEMPFILE ALL;
+}
+
+其他情況範例: (非上述內容)
+RUN {
+  SET NEWNAME FOR DATABASE TO '/u01/app/oracle/oradata/%U';
+  RESTORE DATABASE;
+  SWITCH DATAFILE ALL;
+  
+}
+~~~ !!! ~~~
+
+
+
+### X6. 套用歸檔日誌進行復原
+RMAN> recover database;   -- 會使用你 catalog 的 arch_* 檔案
+
+
+### X7. OPEN 資料庫
+- 若復原到一致點：
+RMAN> alter database open;
+
+- 若控制檔/日誌不匹配或目標是新主機（常見於複製還原），使用 resetlogs：
+RMAN> alter database open resetlogs;
+
+
+
+
+~~~~ 補充:
+結論：- 技術上 NOMOUNT 就能改（因為它只是初始化參數，不影響控制檔還原）。
+- 實務上，建議在 OPEN 後再改，確保 spfile 已經還原並且資料庫能正常啟動。
+- 如果是 Data Guard 或複製環境，則可在 NOMOUNT 就先改好。
+ex: 
+alter system set db_unique_name='NEWJAMESDB' scope=spfile;
+shutdown immediate;
+startup nomount;
+
+~~~~
+
+###################### 異地 END ###############################################
+
