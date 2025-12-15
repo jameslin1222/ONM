@@ -1,0 +1,529 @@
+以下都是以 OS user : oracle 來進行 (進入DB是用sqlplus / as sysdba 來下指令會用 "SQL>" 作為開頭表示)
+
+*********************************************
+primary ( o19dg1 )
+
+1. 打開 Archive log
+## 查看 archivelog mode
+SQL> SELECT log_mode FROM v$database;
+###
+LOG_MODE
+------------
+NOARCHIVELOG
+###
+### 打開 Arhive log mode
+SQL> shutdown immediate;
+SQL> startup mount;
+SQL> alter database archivelog;
+SQL> alter database open;
+
+(如果要強制切換 logging,則
+ALTER DATABASE FORCE LOGGING;
+ALTER SYSTEM SWITCH LOGFILE;
+)
+
+2. 建立 standby redo log (類似PG的 wal_keep_segment 來確保 standby不會被中斷)
+SQL> ALTER DATABASE ADD STANDBY LOGFILE THREAD 1 GROUP 10 SIZE 50M;
+SQL> ALTER DATABASE ADD STANDBY LOGFILE THREAD 1 GROUP 11 SIZE 50M;
+SQL> ALTER DATABASE ADD STANDBY LOGFILE THREAD 1 GROUP 12 SIZE 50M;
+SQL> ALTER DATABASE ADD STANDBY LOGFILE THREAD 1 GROUP 13 SIZE 50M;
+
+############## 如果沒設 OMF　就必須如下指定位置　##################
+SQL> ALTER DATABASE ADD STANDBY LOGFILE THREAD 1 GROUP 10 ('/u01/app/oracle/oradata/ORCL/standby_redo01.log') SIZE 50M;
+SQL> ALTER DATABASE ADD STANDBY LOGFILE THREAD 1 GROUP 11 ('/u01/app/oracle/oradata/ORCL/standby_redo02.log') SIZE 50M;
+SQL> ALTER DATABASE ADD STANDBY LOGFILE THREAD 1 GROUP 12 ('/u01/app/oracle/oradata/ORCL/standby_redo03.log') SIZE 50M;
+SQL> ALTER DATABASE ADD STANDBY LOGFILE THREAD 1 GROUP 13 ('/u01/app/oracle/oradata/ORCL/standby_redo04.log') SIZE 50M;
+####################################################################
+## 查看設置是否成功
+SQL> select GROUP#,STATUS,TYPE,MEMBER from v$logfile;
+
+
+3. 設置初始化參數
+## 檢查 DB_NAME 跟 DB_UNIQUE_NAME 都是相同 (cdb1)  [注意! DB_NAME主備必須要相同, 但是 DB_UNIQUE_NAME 主備必須不同)
+SQL> show parameter db_name
+SQL> show parameter db_unique_name
+
+## 設置 standby file 管理已經設置 (預設 manual,要改為auto)
+SQL> ALTER SYSTEM SET standby_file_management=AUTO;
+
+***********
+
+## 接著兩邊都要做 listener的設置(primary, standby) [連結設置要 不是 SERVICE_NAME 而是 SID ]
+## 1.先備份 tnsnames.ora 以防到時改到掛掉還能救回
+兩者:
+$ cd $ORACLE_HOME/network/admin/
+$ cp tnsnames.ora tnsnames.ora.bak
+## 2.在 兩邊都要 設置的 tnsnames.ora :
+$ vi tnsnames.ora
+
+cdb1 =
+  (DESCRIPTION =
+    (ADDRESS_LIST =      (ADDRESS = (PROTOCOL = TCP)(HOST = o19dg1)(PORT = 1521))
+    )
+    (CONNECT_DATA =
+      (SID = cdb1)
+    )
+  )
+
+cdb1_stby =
+  (DESCRIPTION =
+    (ADDRESS_LIST =      (ADDRESS = (PROTOCOL = TCP)(HOST = o19dg2)(PORT = 1521))
+    )
+    (CONNECT_DATA =
+      (SID = cdb1)
+    )
+  )
+
+##
+## 3.在 primary 設定的 listener.ora
+$ vi listener.ora
+
+LISTENER =
+  (DESCRIPTION_LIST =
+    (DESCRIPTION =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = o19dg1)(PORT = 1521))
+      (ADDRESS = (PROTOCOL = IPC)(KEY = EXTPROC1521))
+    )
+  )
+
+SID_LIST_LISTENER =
+  (SID_LIST =
+    (SID_DESC =
+      (GLOBAL_DBNAME = cdb1_DGMGRL)
+      (ORACLE_HOME = /u01/app/oracle/product/19.0.0/dbhome_1)
+      (SID_NAME = cdb1)
+      (ENVS="TNS_ADMIN=/u01/app/oracle/product/19.0.0/dbhome_1/network/admin")
+    )
+  )
+
+ADR_BASE_LISTENER = /u01/app/oracle
+
+## 4. 在 standby 設定的 listener.ora
+$ vi listener.ora
+
+LISTENER =
+  (DESCRIPTION_LIST =
+    (DESCRIPTION =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = o19dg2)(PORT = 1521))
+      (ADDRESS = (PROTOCOL = IPC)(KEY = EXTPROC1521))
+    )
+  )
+
+SID_LIST_LISTENER =
+  (SID_LIST =
+    (SID_DESC =
+      (GLOBAL_DBNAME = cdb1_stby_DGMGRL)
+      (ORACLE_HOME = /u01/app/oracle/product/19.0.0/dbhome_1)
+      (SID_NAME = cdb1)
+      (ENVS="TNS_ADMIN=/u01/app/oracle/product/19.0.0/dbhome_1/network/admin")
+    )
+  )
+
+ADR_BASE_LISTENER = /u01/app/oracle
+
+## 
+## 然後重啟 listener
+$ lsnrctl stop
+$ lsnrctl start
+
+***************
+***************************************************
+## 接著 standby (o19dg2) 開始做
+
+## 1. 建立standdby組態檔
+$ cat > /tmp/initcdb1_stby.ora <<EOF
+> *.db_name='cdb1'
+> EOF
+
+
+## 2. 建立必要的standby 目錄
+$ mkdir -p /u01/app/oracle/oradata/cdb1/pdbseed
+$ mkdir -p /u01/app/oracle/oradata/cdb1/pdb1
+$ mkdir -p /u01/app/oracle/fast_recovery_area/cdb1
+$ mkdir -p /u01/app/oracle/admin/cdb1/adump
+
+## 3. 建立 password file,密碼必須跟 primary SYS 密碼一致 {這邊會卡密碼複雜規則.所以要回去改primary的SYS密碼.這邊就不紀錄了}
+$ mkdir -p /u01/app/oracle/product/19.0.0/dbhome_1/dbs/
+$ orapwd file=/u01/app/oracle/product/19.0.0/dbhome_1/dbs/orapwcdb1 password=P_ssw0rd321 entries=10
+
+## 4. 建立 standby 暫時性的 init.ora (就是 /tmp/initcdb1_stby.ora ),然後用 DUPLICATE 建立standby
+## 確認環境變數 ORACLE_SID 已經設置,沒有就設置
+[oracle@o19dg2 ~]$ echo $ORACLE_SID    
+cdb1                                      
+
+## 5. DB 啟動到 nomount 
+$ sqlplus / as sysdba
+SQL > STARTUP NOMOUNT PFILE='/tmp/initcdb1_stby.ora';
+SQL > exit
+
+## 6. 用 rman 連結 TARGET 跟 AUXILIARY 這兩個instance, 不要用OS驗證 [就是測之前的 SYS 帳密]
+$ rman TARGET sys/P_ssw0rd321@cdb1 AUXILIARY sys/P_ssw0rd321@cdb1_stby
+
+RMAN> DUPLICATE TARGET DATABASE
+  FOR STANDBY
+  FROM ACTIVE DATABASE
+  DORECOVER
+  SPFILE
+    SET db_unique_name='cdb1_stby' COMMENT 'Is standby'
+  NOFILENAMECHECK;
+
+
+*********************************************
+primary, standby
+## 1. 確認OK後, 兩邊都要開啟 Broker
+SQL> ALTER SYSTEM SET dg_broker_start=true;
+
+*********************************************
+
+*********************************************
+primary
+## 然後再 primary設定 dg 的註冊為 primary
+## 1.登入 dgmrl
+$ dgmgrl sys/P_ssw0rd321@cdb1
+
+## 2.建立 primary 組態設定
+DGMGRL> CREATE CONFIGURATION my_dg_config AS PRIMARY DATABASE IS cdb1 CONNECT IDENTIFIER IS cdb1;
+Configuration "my_dg_config" created with primary database "cdb1"
+
+## 3.加入 standby 組態設定
+DGMGRL> ADD DATABASE cdb1_stby AS CONNECT IDENTIFIER IS cdb1_stby MAINTAINED AS PHYSICAL;
+Database "cdb1_stby" added
+
+## 4.enable 設定
+DGMGRL> ENABLE CONFIGURATION;
+Enabled.
+
+## 5.進行檢查
+## 5.1 查組態 
+DGMGRL> SHOW CONFIGURATION
+
+Configuration - my_dg_config
+
+  Protection Mode: MaxPerformance
+  Members:
+  cdb1      - Primary database
+    cdb1_stby - Physical standby database 
+      Warning: ORA-16857: member disconnected from redo source for longer than specified threshold
+
+Fast-Start Failover:  Disabled
+
+Configuration Status:
+WARNING   (status updated 35 seconds ago)
+
+DGMGRL> 
+
+###    或是等一陣子再查詢 會發現沒了警告,訊息從 WARNING 成為 SUCCESS
+## 5.2 解決常常警告方式 (設定 TransportDisconnectedThreshold 為 0 [關閉警告],或是提升監測值 為 120 (或更高) {非必要,不過可以考慮設定以免常常收到警告}
+DGMGRL> EDIT DATABASE cdb1 SET PROPERTY TransportDisconnectedThreshold='120';
+Property "transportdisconnectedthreshold" updated
+
+## 5.3 查 primary 狀態
+DGMGRL> show database cdb1;
+
+Database - cdb1
+
+  Role:               PRIMARY
+  Intended State:     TRANSPORT-ON
+  Instance(s):
+    cdb1
+
+Database Status:
+SUCCESS
+
+## 5.4 查 standby 狀態
+DGMGRL> show database cdb1_stby
+
+Database - cdb1_stby
+
+  Role:               PHYSICAL STANDBY
+  Intended State:     APPLY-ON
+  Transport Lag:      0 seconds (computed 0 seconds ago)
+  Apply Lag:          0 seconds (computed 0 seconds ago)
+  Average Apply Rate: 286.00 KByte/s
+  Real Time Query:    ON
+  Instance(s):
+    cdb1
+
+Database Status:
+SUCCESS
+
+## 5.5 建立資料來測試
+## priamry 建資料
+SQL> CREATE TABLE t1 (id INT);
+SQL> INSERT INTO t1 VALUES(1);
+SQL> COMMIT;
+
+## standby 查資料看是否同步
+SQL> select * from t1;
+
+	ID
+----------
+	 1
+
+
+******************************************************
+### 進行 switchover
+### 原本是 ora19dg1 (primary), ora19dg2 (standby)
+## 1. 在 primary 發動 swtichover
+$ dgmgrl sys/P_ssw0rd321@cdb1
+DGMGRL> SWITCHOVER TO cdb1_stby;
+... (略,只顯示最後一行）
+Switchover succeeded, new primary is "cdb1_stby"
+
+## 2. 查看各 primary standby 狀態 (show database XXX)
+DGMGRL> show database cdb1
+
+Database - cdb1
+
+  Role:               PHYSICAL STANDBY
+  Intended State:     APPLY-ON
+  Transport Lag:      0 seconds (computed 1 second ago)
+  Apply Lag:          0 seconds (computed 1 second ago)
+  Average Apply Rate: 4.00 KByte/s
+  Real Time Query:    ON
+  Instance(s):
+    cdb1
+
+Database Status:
+SUCCESS
+
+DGMGRL> show database cdb1_stby
+
+Database - cdb1_stby
+
+  Role:               PRIMARY
+  Intended State:     TRANSPORT-ON
+  Instance(s):
+    cdb1
+
+Database Status:
+SUCCESS
+
+
+**********************************************************
+### 進行 failover
+### 情況是原先 ora19dg2 (primary [cdb1_stby]), oora19dg1 (standby [cdb1])　[無 flashback]
+## 1. 連入原 standby方進行 failover (注意喔,這跟這邊因為 cdb1為standby,cdb1_stby為primary,所以要看仔細喔）
+$ dgmgrl sys/P_ssw0rd321@cdb1
+DGMGRL> FAILOVER TO cdb1;
+Performing failover NOW, please wait...
+Failover succeeded, new primary is "cdb1"
+DGMGRL> 
+
+## 2. 把舊 primary (cdb1_standby)進行重新復原
+## 2.0 這時可以看各DB狀況來確認哪個要重建
+# 可以看到 cdb1是　新primary
+DGMGRL> show database cdb1
+
+Database - cdb1
+
+  Role:               PRIMARY
+  Intended State:     TRANSPORT-ON
+  Instance(s):
+    cdb1
+
+Database Status:
+SUCCESS
+
+# 可以看到 cdb1_stby是 舊primary,需要重建
+DGMGRL> show database cdb1_stby
+
+Database - cdb1_stby
+
+  Role:               PHYSICAL STANDBY
+  Intended State:     APPLY-ON
+  Transport Lag:      (unknown)
+  Apply Lag:          (unknown)
+  Average Apply Rate: (unknown)
+  Real Time Query:    OFF
+  Instance(s):
+    cdb1
+
+Database Status:
+DISABLED - ORA-16795: the standby database needs to be re-created
+
+## 2.1 利用flashback進行重建 (我這邊沒開flashback,所以會錯誤正常,我故意要看錯誤訊息為何)
+DGMGRL> REINSTATE DATABASE cdb1_stby
+Reinstating database "cdb1_stby", please wait...
+Operation requires shut down of instance "cdb1" on database "cdb1_stby"
+Shutting down instance "cdb1"...
+Connected to "cdb1_stby"
+ORACLE instance shut down.
+Operation requires start up of instance "cdb1" on database "cdb1_stby"
+Starting instance "cdb1"...
+Connected to an idle instance.
+ORACLE instance started.
+Connected to "cdb1_stby"
+Database mounted.
+Connected to "cdb1_stby"
+Continuing to reinstate database "cdb1_stby" ...
+Error: ORA-16827: Flashback Database is disabled
+
+Failed.
+Reinstatement of database "cdb1_stby" failed
+DGMGRL> 
+
+
+
+
+
+## 2.1 重建standby (砍掉重建,就像 pg的 pg_basebackup)　
+##     注意,這邊 cdb1_stby是舊primary,　所以在 ora19dg2　下砍掉資料重建
+##     也可以用 sqlplus 確認本地端是哪個DB要砍掉 (SQL> show parameter db_unique_name)
+## 2.1.1 再次確認要砍掉的舊primary (cdb1_stby)
+SQL> show parameter db_unique_name
+
+NAME				     TYPE	 VALUE
+------------------------------------ ----------- ------------------------------
+db_unique_name			     string	 cdb1_stby
+SQL> 
+
+****** 補充資訊 BEGIN ******
+補充1: failover後的舊DB無法查詢
+SQL> select * from t1;
+select * from t1
+              *
+ERROR at line 1:
+ORA-01219: database or pluggable database not open: queries allowed on fixed
+tables or views only
+
+補充2: failover後的舊DB無法open
+SQL> alter database open;
+alter database open
+*
+ERROR at line 1:
+ORA-16649: possible failover to another database prevents this database from
+being opened
+
+補充3: 注意!! failover後的舊DB如果shutdown後再次startup open,舊的primary雖然不會同步但是可以進行一般正常運作(stand alone),特別要注意,別造成資料混淆!!
+解決參考方式: failover的舊DB　不要讓他關閉後啟動,所以重開機後自動啟動DB服務不要設置,以免造成AP切換誤判
+
+
+****** 補充資訊 END ******
+## 2.1.2 把DB服務關閉
+
+SQL> shutdown immediate
+ORA-01109: database not open
+Database dismounted.
+ORACLE instance shut down.
+SQL> 
+
+## 2.1.3　刪除所有DB實體資料語組態檔
+
+$ rm -Rf /u01/app/oracle/oradata/cdb1/*
+$ rm -Rf /u01/app/oracle/fast_recovery_area/cdb1
+$ rm -Rf /u01/app/oracle/fast_recovery_area/cdb1_stby
+$ rm -Rf /u01/app/oracle/admin/cdb1
+$ mkdir -p /u01/app/oracle/fast_recovery_area/cdb1
+$ mkdir -p /u01/app/oracle/admin/cdb1/adump
+$ mkdir -p /u01/app/oracle/oradata/cdb1/pdbseed
+$ mkdir -p /u01/app/oracle/oradata/cdb1/pdb1
+$ rm $ORACLE_HOME/dbs/spfilecdb1.ora
+
+## 2.1.4 重建standby DB (注意 listner 若沒打開要打開)
+[oracle@o19dg2 ~]$ cat /tmp/initcdb1_stby.ora 
+*.db_name='cdb1'
+[oracle@o19dg2 ~]$ export ORACLE_SID=cdb1
+[oracle@o19dg2 ~]$ sqlplus / as sysdba
+
+SQL> STARTUP NOMOUNT PFILE='/tmp/initcdb1_stby.ora';
+
+$ rman TARGET sys/P_ssw0rd321@cdb1 AUXILIARY sys/P_ssw0rd321@cdb1_stby
+
+RMAN> DUPLICATE TARGET DATABASE
+2>   FOR STANDBY
+3>   FROM ACTIVE DATABASE
+4>   DORECOVER
+5>   SPFILE
+6>     SET db_unique_name = 'cdb1_stby' COMMENT 'is standby'
+7>   NOFILENAMECHECK;
+
+
+## 2.1.5 用 dgmgrl 連到新 primary (ora18dg1 cdb1)把standby重新加入,別連錯喔
+$ dgmgrl sys/P_ssw0rd321@cdb1
+
+DGMGRL> ENABLE DATABASE cdb1_stby
+Enabled.
+DGMGRL> 
+
+
+********* 以上 data guard 操作完畢 ****************
+
+********* 補充 flashback **************************
+補充: flashback 在已經建好的 dg 是無法直接開啟的
+會出現以下錯誤:
+SQL> ALTER DATABASE FLASHBACK ON;
+ALTER DATABASE FLASHBACK ON
+*
+ERROR at line 1:
+ORA-38706: Cannot turn on FLASHBACK DATABASE logging.
+ORA-38709: Recovery Area is not enabled.
+
+嘗試解決方式: 設置 db_recovery_file_dest 和 db_recovery_file_dest_size 參數
+## 兩台都要做下列方式開啟flashback
+## 1.建立存放flashback檔案目錄
+$ mkdir /u02/flashrecovery
+
+## 2.設定flashback參數並且強制重新啟動然後開啟flashback
+SQL> ALTER SYSTEM SET db_recovery_file_dest_size=5g SCOPE=spfile;
+SQL> ALTER SYSTEM SET db_recovery_file_dest='/u02/flashrecovery' SCOPE=spfile;
+SQL> startup force;
+SQL> ALTER DATABASE FLASHBACK on;
+
+## 3.然後檢查flashback是否開啟
+SQL> SELECT flashback_on FROM v$database;
+
+FLASHBACK_ON
+------------------
+YES
+
+
+
+## 4.用 failover 來測試看看是否能正常運作flashback (cdb1是primary, cdb1_stby是standby, 也可以用show database來查看)
+## 再次提醒, failover是連到 standby那邊進行failover喔,不然你連primary進行會一直出現 "Error: ORA-16600: not connected to target standby database for failover"
+$ dgmgrl sys/P_ssw0rd321@cdb1_stby
+
+DGMGRL> FAILOVER TO cdb1_stby
+Performing failover NOW, please wait...
+Failover succeeded, new primary is "cdb1_stby"
+DGMGRL> 
+
+## 5.接著繼續對舊的primary進行重建成standby
+DGMGRL> REINSTATE DATABASE cdb1;
+Reinstating database "cdb1", please wait...
+Operation requires shut down of instance "cdb1" on database "cdb1"
+Shutting down instance "cdb1"...
+Connected to "cdb1"
+ORACLE instance shut down.
+Operation requires start up of instance "cdb1" on database "cdb1"
+Starting instance "cdb1"...
+Connected to an idle instance.
+ORACLE instance started.
+Connected to "cdb1"
+Database mounted.
+Connected to "cdb1"
+Continuing to reinstate database "cdb1" ...
+Reinstatement of database "cdb1" succeeded
+DGMGRL> 
+
+## 6.進行檢查看是否成功
+DGMGRL> show database cdb1
+
+Database - cdb1
+
+  Role:               PHYSICAL STANDBY
+  Intended State:     APPLY-ON
+  Transport Lag:      0 seconds (computed 0 seconds ago)
+  Apply Lag:          0 seconds (computed 0 seconds ago)
+  Average Apply Rate: 43.00 KByte/s
+  Real Time Query:    ON
+  Instance(s):
+    cdb1
+
+Database Status:
+SUCCESS
+
+DGMGRL> 
+
+
+

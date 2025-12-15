@@ -1,0 +1,108 @@
+Note: AI suggest, Not confirmed!  (alpha 1)
+
+
+Q:
+已知有2台主機都安裝了Oracle Database 19c，OS都是Oracle Linux 8.10 資訊如下: db19c01, 192.168.56.19,port=1521, SID=cdb1, PDB=pdb1, dbuser=system,dbpassword=oracle,osuser=root,ospassword=oracle
+db19c02, 192.168.56.20,port=1521, SID=cdb1, PDB=pdb1, dbuser=system,dbpassword=oracle,osuser=root,ospassword=oracle
+現在想要做Active Data Guard，db19c01做Primary, db19c02做standby， 請提供注意事項和操作步驟
+
+
+
+ANS:
+快速回答：
+在 Oracle 19c 上建立 Active Data Guard，需要先確保兩台主機環境一致、網路暢通、資料庫版本相同，並完成 Primary 與 Standby 的初始化。建議使用 Data Guard Broker 來簡化管理。步驟包含：環境準備 → Primary 設定 → 備庫建立 → 啟用 Data Guard Broker → 驗證同步與開啟只讀模式。
+
+
+
+⚠️ 注意事項
+- 版本一致性：Primary 與 Standby 必須相同版本、相同補丁。
+- OS 與參數一致：Oracle Linux 8.10，建議兩台主機的 OS kernel、時區、字符集一致。
+- 網路連通性：確保 1521 port 開放，兩台主機能互相解析 hostname。
+- 密碼檔案：Primary 與 Standby 的 orapwd 必須一致。
+- 初始化參數：如 DB_UNIQUE_NAME、LOG_ARCHIVE_CONFIG、LOG_ARCHIVE_DEST_n、REMOTE_LOGIN_PASSWORDFILE 等需正確配置。
+- 備份策略：Active Data Guard 提供只讀查詢，但仍需定期備份 Primary。
+
+🛠 操作步驟
+1. 環境準備
+- 設定主機名：
+- db19c01 → primary-db
+- db19c02 → standby-db
+- 確認兩台主機能互 ping，並配置 /etc/hosts。
+- 確保 Oracle 軟體安裝目錄一致。
+
+
+2. Primary 資料庫設定 (db19c01)
+- 2.1 修改初始化參數：
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ALTER SYSTEM SET DB_UNIQUE_NAME='cdb1pri' SCOPE=SPFILE;
+ALTER SYSTEM SET LOG_ARCHIVE_CONFIG='DG_CONFIG=(cdb1pri,cdb1std)';
+ALTER SYSTEM SET LOG_ARCHIVE_DEST_2='SERVICE=cdb1std ASYNC VALID_FOR=(ONLINE_LOGFILES,PRIMARY_ROLE) DB_UNIQUE_NAME=cdb1std';
+ALTER SYSTEM SET REMOTE_LOGIN_PASSWORDFILE=EXCLUSIVE SCOPE=SPFILE;
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- 2.2 建立 standby redo log：
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ALTER DATABASE ADD STANDBY LOGFILE ('/u01/app/oracle/oradata/cdb1/stdredo01.log') SIZE 200M;
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- 2.3 建立密碼檔並複製到 Standby。
+
+
+
+
+3. 建立 Standby 資料庫 (db19c02)
+- 3.1 使用 RMAN 從 Primary 複製：
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+rman target sys@cdb1pri auxiliary sys@cdb1std
+RMAN> DUPLICATE TARGET DATABASE FOR STANDBY FROM ACTIVE DATABASE DORECOVER;
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+- 確認 DB_UNIQUE_NAME='cdb1std'。
+
+
+
+4. 啟用 Data Guard Broker
+- 在 Primary 啟用：
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ALTER SYSTEM SET DG_BROKER_START=TRUE;
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- 在 Standby 啟用：
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ALTER SYSTEM SET DG_BROKER_START=TRUE;
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- 使用 dgmgrl 建立配置：
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+DGMGRL> CREATE CONFIGURATION 'adg_config' AS PRIMARY DATABASE IS 'cdb1pri' CONNECT IDENTIFIER IS cdb1pri;
+DGMGRL> ADD DATABASE 'cdb1std' AS CONNECT IDENTIFIER IS cdb1std MAINTAINED AS PHYSICAL;
+DGMGRL> ENABLE CONFIGURATION;
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+5. 驗證與啟用 Active Data Guard
+- 確認同步：
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+DGMGRL> SHOW CONFIGURATION;
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- 將 Standby 開啟只讀：
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ALTER DATABASE OPEN READ ONLY;
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+============
+
+✅ 最後檢查
+- Primary 與 Standby 狀態均為 SUCCESS。
+- Standby 可執行查詢，並持續接收 redo。
+- 測試故障切換與切回。
+
+
+ref1: https://docs.oracle.com/en/database/oracle/oracle-database/19/haovw/configure-and-deploy-oracle-data-guard.html
+
+ref2: https://oracle-base.com/articles/19c/data-guard-setup-using-broker-19c
+
+
+
+

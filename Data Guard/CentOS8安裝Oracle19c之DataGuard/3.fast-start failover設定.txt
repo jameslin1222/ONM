@@ -1,0 +1,1582 @@
+##### 設定 fast-start failover
+#####  Fast-Start-Failover Observer (FSFO)
+這個環境已經跟之前不同,不過作法跟之前一樣,
+有些補漏的之後我有空會自己再做整理.
+
+### 設置環境 ###
+OS: CentOS 7
+Oracle: 19.3.0.0.0
+兩台做 data guard 完成
+ora19c01 192.168.56.41 primary (cdb1)
+ora19c02 192.168.56.42 standby (cdb1_stby)
+sys/P_ssw0rd321
+ORACLE_HOME=/opt/oracle/product/19c/dbhome_1
+ORACLE_SID=cdb1
+
+################# 
+都在primary下設置,但必須在standby下啟動
+### 1.使用 dgmgrl 來連到primary
+[oracle@ora19c01 ~]$ dgmgrl sys/P_ssw0rd321@cdb1
+
+### 2.檢查每台(主備都要檢查)都已經有設 StaticConnectIdentifier 
+  如果內容為空,則必須設置,FSFO必備前置
+~~~
+show database <DB名稱> StaticConnectIdentifier;
+~~~
+
+DGMGRL> show database cdb1 StaticConnectIdentifier;
+  StaticConnectIdentifier = '(DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=ora19c01)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=cdb1_DGMGRL)(INSTANCE_NAME=cdb1)(SERVER=DEDICATED)))'
+DGMGRL>
+DGMGRL> show database cdb1_stby StaticConnectIdentifier;
+  StaticConnectIdentifier = '(DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=ora19c02)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=CDB1_STBY_DGMGRL)(INSTANCE_NAME=cdb1)(SERVER=DEDICATED)))'
+DGMGRL>
+
+
+(如果為空,先連到sqplus然後編輯參數 LOCAL_LISTENER)
+[以下為參考,我沒實際測試]
+~~~
+ALTER SYSTEM SET LOCAL_LISTENER='(ADDRESS=(PROTOCOL=TCP)(HOST=192.168.56.4X)(PORT=1521))';
+~~~
+
+
+### 3.設置 FastStartFailoverTarget
+一般情況下，可以有多個實體備用資料庫。因此，我們需要將實體備用資料庫與主資料庫配對，以便快速啟動故障轉移知道要啟動哪個實體備用資料庫
+
+## 3.1 查看 FAST_START FAILOVER 情況(尚未設置前)
+~~~
+SHOW FAST_START FAILOVER
+~~~
+
+DGMGRL> SHOW FAST_START FAILOVER
+
+Fast-Start Failover:  Disabled
+
+  Protection Mode:    MaxPerformance
+  Lag Limit:          30 seconds
+
+  Threshold:          30 seconds
+  Active Target:      (none)
+  Potential Targets:  (none)
+  Observer:           (none)
+  Shutdown Primary:   TRUE
+  Auto-reinstate:     TRUE
+  Observer Reconnect: (none)
+  Observer Override:  FALSE
+
+Configurable Failover Conditions
+  Health Conditions:
+    Corrupted Controlfile          YES
+    Corrupted Dictionary           YES
+    Inaccessible Logfile            NO
+    Stuck Archiver                  NO
+    Datafile Write Errors          YES
+
+  Oracle Error Conditions:
+    (none)
+
+DGMGRL>
+
+## 3.2 設置每台資料庫參數 FastStartFailoverTarget
+  設置對象為對方(主=>備, 備=>主),也就是當failover時要切換的對象.
+  這邊只有兩台,所以比較簡單. 如果有多台,則這個設置就是切換時的優先順序,或是也可設置 ANY 這個關鍵字,表示當發生failover時可以任一切換
+  注意: 這個主要生效於primary, 而其他台也要設置就是為了當他們某天成為primary時,若發生故障也可以切換到下一台.
+  (觀念類似PG的 synchronous_standby_names ,但本質完全不同)
+
+DGMGRL> EDIT DATABASE cdb1 SET PROPERTY FastStartFailoverTarget = 'cdb1_stby';
+Property "faststartfailovertarget" updated
+DGMGRL> EDIT DATABASE cdb1_stby SET PROPERTY FastStartFailoverTarget = 'cdb1';
+Property "faststartfailovertarget" updated
+
+
+(參考官方設置參數說明:
+https://docs.oracle.com/en/database/oracle/oracle-database/19/dgbkr/oracle-data-guard-broker-properties.html#GUID-63108DF8-4DAD-40F1-88B1-458C3FCB6C84
+)
+
+
+## 3.3 檢查各DB設置情況 (約第12行 看 FastStartFailoverTarget 那一行)
+~~~
+show database verbose <DB名稱>
+~~~
+
+  (查看primary)
+DGMGRL> show database verbose cdb1
+
+Database - cdb1
+
+  Role:               PRIMARY
+  Intended State:     TRANSPORT-ON
+  Instance(s):
+    cdb1
+
+  Properties:
+    DGConnectIdentifier             = 'cdb1'
+    ObserverConnectIdentifier       = ''
+    FastStartFailoverTarget         = 'cdb1_stby'
+    PreferredObserverHosts          = ''
+    LogShipping                     = 'ON'
+    RedoRoutes                      = ''
+    LogXptMode                      = 'ASYNC'
+    DelayMins                       = '0'
+    Binding                         = 'optional'
+    MaxFailure                      = '0'
+    ReopenSecs                      = '300'
+    NetTimeout                      = '30'
+    RedoCompression                 = 'DISABLE'
+    PreferredApplyInstance          = ''
+    ApplyInstanceTimeout            = '0'
+    ApplyLagThreshold               = '30'
+    TransportLagThreshold           = '30'
+    TransportDisconnectedThreshold  = '30'
+    ApplyParallel                   = 'AUTO'
+    ApplyInstances                  = '0'
+    StandbyFileManagement           = ''
+    ArchiveLagTarget                = '0'
+    LogArchiveMaxProcesses          = '0'
+    LogArchiveMinSucceedDest        = '0'
+    DataGuardSyncLatency            = '0'
+    LogArchiveTrace                 = '0'
+    LogArchiveFormat                = ''
+    DbFileNameConvert               = ''
+    LogFileNameConvert              = ''
+    ArchiveLocation                 = ''
+    AlternateLocation               = ''
+    StandbyArchiveLocation          = ''
+    StandbyAlternateLocation        = ''
+    InconsistentProperties          = '(monitor)'
+    InconsistentLogXptProps         = '(monitor)'
+    LogXptStatus                    = '(monitor)'
+    SendQEntries                    = '(monitor)'
+    RecvQEntries                    = '(monitor)'
+    HostName                        = 'ora19c01'
+    StaticConnectIdentifier         = '(DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=ora19c01)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=cdb1_DGMGRL)(INSTANCE_NAME=cdb1)(SERVER=DEDICATED)))'
+    TopWaitEvents                   = '(monitor)'
+    SidName                         = '(monitor)'
+
+  Log file locations:
+    Alert log               : /opt/oracle/diag/rdbms/cdb1/cdb1/trace/alert_cdb1.log
+    Data Guard Broker log   : /opt/oracle/diag/rdbms/cdb1/cdb1/trace/drccdb1.log
+
+Database Status:
+SUCCESS
+
+DGMGRL>
+
+  (查看standby,因為上面已有完整,我這邊就略過部分)
+DGMGRL> show database verbose cdb1_stby
+
+Database - cdb1_stby
+
+  Role:               PHYSICAL STANDBY
+  Intended State:     APPLY-ON
+
+...(略)
+  Properties:
+    DGConnectIdentifier             = 'cdb1_stby' 
+    ObserverConnectIdentifier       = ''
+    FastStartFailoverTarget         = 'cdb1'
+    PreferredObserverHosts          = ''
+    LogShipping                     = 'ON'
+    RedoRoutes                      = ''
+    LogXptMode                      = 'ASYNC'
+...(略)
+Database Status:
+SUCCESS
+
+DGMGRL>
+
+
+### 4. 設置 FastStartFailoverThreshold (非必要,預設30秒)
+  讓代理程式知道何時啟動自動故障轉移。 FSFO 在啟動故障轉移之前將等待的時間（以秒為單位）
+  預設30秒,我這邊設置60秒為例
+
+~~~
+EDIT CONFIGURATION SET PROPERTY FastStartFailoverThreshold=60;
+~~~
+
+DGMGRL> EDIT CONFIGURATION SET PROPERTY FastStartFailoverThreshold=60;
+Property "faststartfailoverthreshold" updated
+DGMGRL>
+DGMGRL> show fast_start failover
+
+Fast-Start Failover:  Disabled
+
+  Protection Mode:    MaxPerformance
+  Lag Limit:          30 seconds
+
+  Threshold:          60 seconds  <== 這個
+  Active Target:      (none)
+  Potential Targets:  "cdb1_stby"
+    cdb1_stby  valid
+  Observer:           (none)
+...(略)
+
+
+### 5. 設置 FastStartFailoverLagLimit (非必要,預設30秒)
+在 Data Guard 處於最大效能模式時(Max Performance Mode)    可接受遺失多少時間（以秒為單位）的資料
+
+這邊我就不設置了. 
+~~~
+EDIT CONFIGURATION SET PROPERTY FastStartFailoverLagLimit = <正整數>;
+~~~
+補充: 我嘗試用不同格式輸入
+1.當小數時,則直接無條件進位ex: 30.9 => 結果為 30
+2.當0時,則出現錯誤 (要你改mode)
+Error: ORA-16903: change of FastStartFailoverLagLimit property violates configuration protection mode
+3.當為負數,或相除相加等運算,則出現錯誤 (格式錯誤)
+Error: ORA-16790: the value of the configurable property is invalid
+
+
+
+### 6.啟動 FSFO (注意! 永遠不要在primary啟動observer)
+啟用 FSFO, 注意:千萬不要在primary上啟動觀察者observer
+<我之前沒設flashback,所以出現警告>
+啟動時畫面沒回應,但其實已經有做用,等我做到第9步時畫面就更新了
+此外,我這邊是在ora19c01那台登入,這應該是有錯的,應該要在ora19c02那台登入操作比較好.在第11步時發覺到observerv顯示 ora19c01, 所以應該要在standby或是witness的那台做操作為宜
+
+~~~
+dgmgrl sys/P_ssw0rd321@cdb1_stby
+ENABLE FAST_START FAILOVER;
+show configuration;
+start observer;
+~~~
+DGMGRL> exit
+[oracle@ora19c01 ~]$ dgmgrl sys/P_ssw0rd321@cdb1_stby
+DGMGRL> ENABLE FAST_START FAILOVER;
+Warning: ORA-16827: Flashback Database is disabled
+
+Enabled in Potential Data Loss Mode.
+DGMGRL> show configuration;
+
+Configuration - my_dg_config
+
+  Protection Mode: MaxPerformance
+  Members:
+  cdb1      - Primary database
+    Warning: ORA-16819: fast-start failover observer not started
+
+    cdb1_stby - (*) Physical standby database
+
+Fast-Start Failover: Enabled in Potential Data Loss Mode
+
+Configuration Status:
+WARNING   (status updated 50 seconds ago)
+
+DGMGRL> start observer;
+[W000 2024-07-16T16:12:50.112+08:00] FSFO target standby is cdb1_stby
+Observer 'ora19c01' started
+[W000 2024-07-16T16:12:50.216+08:00] Observer trace level is set to USER
+[W000 2024-07-16T16:12:50.216+08:00] Try to connect to the primary.
+[W000 2024-07-16T16:12:50.216+08:00] Try to connect to the primary cdb1.
+[W000 2024-07-16T16:12:50.226+08:00] The standby cdb1_stby is ready to be a FSFO target
+[W000 2024-07-16T16:12:51.227+08:00] Connection to the primary restored!
+[W000 2024-07-16T16:12:53.239+08:00] Disconnecting from database cdb1.
+(然後我畫面就卡住了......)
+(等我做到第9步時畫面就更新了.表示其實已經啟動了)
+
+### 7.primary操作資料
+我開啟新的terminal,然後開始測試模擬資料操作
+[oracle@ora19c01 ~]$ sqlplus / as sysdba
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 PDB1                           MOUNTED
+SQL> alter pluggable database PDB1 open;
+
+Pluggable database altered.
+
+SQL> alter session set container=PDB1;
+
+Session altered.
+
+SQL> show con_name
+
+CON_NAME
+------------------------------
+PDB1
+SQL>
+SQL> create table t1(id int);
+
+Table created.
+
+SQL> insert into t1 values(100);
+
+1 row created.
+
+SQL> commit;
+
+Commit complete.
+
+SQL> exit
+
+
+### 8.standby這時無法開啟DB,也無法查看內容,跟PG不同
+[oracle@ora19c02 ~]$ sqlplus / as sysdba
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       MOUNTED
+         3 PDB1                           MOUNTED
+SQL> alter pluggable database PDB1 open;
+alter pluggable database PDB1 open
+*
+ERROR at line 1:
+ORA-01109: database not open
+
+
+### 9.在切換前先把REDO給standby (primary操作)
+~~~
+  ALTER SYSTEM FLUSH REDO TO <standby db>
+~~~
+  這做法,必須在primary為mount且未open情況下才能做
+
+在OPEN下執行會出現錯誤 ORA-16445
+[oracle@ora19c01 ~]$ sqlplus / as sysdba
+SQL> ALTER SYSTEM FLUSH REDO TO 'cdb1_stby';
+ALTER SYSTEM FLUSH REDO TO 'cdb1_stby'
+*
+ERROR at line 1:
+ORA-16445: Database has to be mounted and cannot be open
+
+## 9.1 先把DB給關閉後再mount
+SQL> shutdown immediate;
+Database closed.
+Database dismounted.
+ORACLE instance shut down.
+SQL> startup mount;
+ORACLE instance started.
+
+Total System Global Area 1191178288 bytes
+Fixed Size                  9134128 bytes
+Variable Size             318767104 bytes
+Database Buffers          855638016 bytes
+Redo Buffers                7639040 bytes
+Database mounted.
+SQL>
+
+
+
+## 9.2 這時在原本的啟動observer那個視窗已經更新內容,表示其實已經有作用
+
+當時shutdowm後再mount的過程
+因為沒有到指定切換時間,所以沒進行切換
+
+!!!!!!!!!!!!!!!!!畫面!!!!!!!!!!!!!!!!
+[W000 2024-07-16T16:12:51.227+08:00] Connection to the primary restored!
+[W000 2024-07-16T16:12:53.239+08:00] Disconnecting from database cdb1.
+
+
+
+[W000 2024-07-16T16:39:00.438+08:00] Primary database cannot be reached.
+[W000 2024-07-16T16:39:00.438+08:00] Fast-Start Failover threshold has not exceeded. Retry for the next 60 seconds
+[W000 2024-07-16T16:39:01.439+08:00] Standby is in the SUSPEND state.
+[W000 2024-07-16T16:39:01.439+08:00] Try to connect to the primary.
+ORA-12537: TNS:connection closed
+
+Unable to connect to database using cdb1
+[W000 2024-07-16T16:39:01.471+08:00] Primary database cannot be reached.
+[W000 2024-07-16T16:39:01.471+08:00] Fast-Start Failover suspended. Reset FSFO timer.
+[W000 2024-07-16T16:39:01.471+08:00] Fast-Start Failover threshold has not exceeded. Retry for the next 60 seconds
+[W000 2024-07-16T16:39:02.472+08:00] Try to connect to the primary.
+ORA-12537: TNS:connection closed
+
+Unable to connect to database using cdb1
+[W000 2024-07-16T16:39:02.484+08:00] Primary database cannot be reached.
+[W000 2024-07-16T16:39:02.484+08:00] Fast-Start Failover suspended. Reset FSFO timer.
+[W000 2024-07-16T16:39:02.484+08:00] Fast-Start Failover threshold has not exceeded. Retry for the next 60 seconds
+[W000 2024-07-16T16:39:03.484+08:00] Try to connect to the primary.
+ORA-12537: TNS:connection closed
+... (一直重複)
+Unable to connect to database using cdb1
+[W000 2024-07-16T16:39:18.783+08:00] Primary database cannot be reached.
+[W000 2024-07-16T16:39:18.783+08:00] Fast-Start Failover suspended. Reset FSFO timer.
+[W000 2024-07-16T16:39:18.783+08:00] Fast-Start Failover threshold has not exceeded. Retry for the next 60 seconds
+
+
+[W000 2024-07-16T16:39:19.784+08:00] Try to connect to the primary.
+[W000 2024-07-16T16:39:20.874+08:00] Primary database cannot be reached.
+[W000 2024-07-16T16:39:20.874+08:00] Fast-Start Failover suspended. Reset FSFO timer.
+[W000 2024-07-16T16:39:20.874+08:00] Fast-Start Failover threshold has not exceeded. Retry for the next 60 seconds
+... (一直重複)
+[W000 2024-07-16T16:39:32.498+08:00] Try to connect to the primary.
+[W000 2024-07-16T16:39:55.772+08:00] Standby is in the SUSPEND state.
+[W000 2024-07-16T16:39:58.777+08:00] Standby is in the SUSPEND state.
+[W000 2024-07-16T16:40:01.781+08:00] Standby is in the SUSPEND state.
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+
+## 9.3 這時候兩台都查看一下狀態
+~~~
+select name, open_mode, db_unique_name from v$database;
+~~~
+
+(primary)
+SQL> select name, open_mode, db_unique_name from v$database;
+
+NAME      OPEN_MODE            DB_UNIQUE_NAME
+--------- -------------------- ------------------------------
+CDB1      MOUNTED              cdb1
+
+(standby)
+SQL> select name, open_mode, db_unique_name from v$database;
+
+NAME      OPEN_MODE            DB_UNIQUE_NAME
+--------- -------------------- ------------------------------
+CDB1      MOUNTED              CDB1_STBY
+
+
+## 9.4 當兩台都mount情況,primary就可以把REDO刷新給standby
+~~~
+(primary執行)
+ALTER SYSTEM FLUSH REDO TO 'cdb1_stby';
+~~~
+
+SQL> ALTER SYSTEM FLUSH REDO TO 'cdb1_stby';
+System altered.
+
+
+補充: 我嘗試用standby下指令,會出現錯誤 ORA-16584
+SQL>  ALTER SYSTEM FLUSH REDO TO 'cdb1_stby';
+ ALTER SYSTEM FLUSH REDO TO 'cdb1_stby'
+*
+ERROR at line 1:
+ORA-16584: operation cannot be performed on a standby database
+
+
+
+### 10.把standby模擬故障,強制關閉,並查看
+(原本是要模擬primary但我關錯..關到standby,就順便觀察)
+
+## 10.1 standby 強制關閉模擬故障
+SQL> shutdown abort;
+ORACLE instance shut down.
+
+## 10.2 觀察之前的監控視窗看訊息變換
+
+!!! 畫面 !!!!!!!!!!!
+[W000 2024-07-16T16:40:01.781+08:00] Standby is in the SUSPEND state.
+[W000 2024-07-16T16:55:27.422+08:00] Failed to ping the standby.
+[W000 2024-07-16T16:55:30.424+08:00] Failed to ping the standby.
+[W000 2024-07-16T16:55:33.428+08:00] Failed to ping the standby.
+[W000 2024-07-16T16:55:36.433+08:00] Failed to ping the standby.
+...(重複)
+
+!!!!!!!!!!!!!!!!!!!!
+
+## 10.3 把standby給恢復啟動
+SQL> startup
+ORACLE instance started.
+
+Total System Global Area 1191178288 bytes
+Fixed Size                  9134128 bytes
+Variable Size             318767104 bytes
+Database Buffers          855638016 bytes
+Redo Buffers                7639040 bytes
+Database mounted.
+Database opened.
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 PDB1                           MOUNTED
+SQL>
+
+## 10.4 監控畫面就不動了
+!!! 畫面 !!!
+[W000 2024-07-16T16:58:18.202+08:00] Failed to ping the standby.
+[W000 2024-07-16T16:58:21.212+08:00] Failed to ping the standby.
+
+(就沒任何回應)
+!!!!!!!!!!!!
+
+## 10.5 primary依然可以 FLUSH REDO表示沒問題
+SQL> ALTER SYSTEM FLUSH REDO TO 'cdb1_stby';
+System altered.
+
+
+
+### 11.把原本監控視窗關閉,再開一個新的terminal來查看
+## 11.1 dgmgl 登入standby
+[oracle@ora19c02 ~]$ dgmgrl sys/P_ssw0rd321@cdb1_stby
+
+## 11.2 查看狀況,先停止observer和 FAST_START FAILOVER
+發現 observer為 ora19c01,所以表示要啟動observer是要在登入的那台上操作才對
+DGMGRL> show fast_start failover
+
+Fast-Start Failover: Enabled in Potential Data Loss Mode
+
+  Protection Mode:    MaxPerformance
+  Lag Limit:          30 seconds
+
+  Threshold:          60 seconds
+  Active Target:      cdb1_stby
+  Potential Targets:  "cdb1_stby"
+    cdb1_stby  valid
+  Observer:           ora19c01
+  Shutdown Primary:   TRUE
+  Auto-reinstate:     TRUE
+  Observer Reconnect: (none)
+  Observer Override:  FALSE
+
+Configurable Failover Conditions
+  Health Conditions:
+    Corrupted Controlfile          YES
+    Corrupted Dictionary           YES
+    Inaccessible Logfile            NO
+    Stuck Archiver                  NO
+    Datafile Write Errors          YES
+
+  Oracle Error Conditions:
+    (none)
+
+DGMGRL>
+DGMGRL> stop observer
+Observer stopped.
+DGMGRL>
+DGMGRL> DISABLE FAST_START FAILOVER;
+Disabled.
+DGMGRL>  show fast_start failover
+
+Fast-Start Failover:  Disabled
+...(略)
+ Observer:           (none)
+...(略)
+
+
+## 11.3 查看各DB情況
+(primary) 因為之前mount,所以錯誤 ORA-16782
+DGMGRL> show database cdb1
+
+Database - cdb1
+
+  Role:               PRIMARY
+  Intended State:     TRANSPORT-ON
+  Instance(s):
+    cdb1
+      Error: ORA-16782: instance not open for read and write access
+
+Database Status:
+ERROR
+
+
+(standby)
+DGMGRL> show database cdb1_stby
+
+Database - cdb1_stby
+
+  Role:               PHYSICAL STANDBY
+  Intended State:     APPLY-ON
+  Transport Lag:      (unknown)
+  Apply Lag:          (unknown)
+  Average Apply Rate: (unknown)
+  Real Time Query:    ON
+  Instance(s):
+    cdb1
+
+  Database Warning(s):
+    ORA-16854: apply lag could not be determined
+    ORA-16856: transport lag could not be determined
+    ORA-16857: member disconnected from redo source for longer than specified threshold
+
+Database Status:
+WARNING
+
+
+
+### 12.解決primary的問題 (我這個做完standby也自動解決了)
+因為之前REDO FLUSH,只要把DB給OPEN就好
+
+SQL> select name, open_mode, db_unique_name from v$database;
+
+NAME      OPEN_MODE            DB_UNIQUE_NAME
+--------- -------------------- ------------------------------
+CDB1      MOUNTED              cdb1
+
+SQL> alter database open;
+
+Database altered.
+
+SQL> select name, open_mode, db_unique_name from v$database;
+
+NAME      OPEN_MODE            DB_UNIQUE_NAME
+--------- -------------------- ------------------------------
+CDB1      READ WRITE           cdb1
+
+SQL>
+
+
+### 13.這時候再查看狀態就都成功(SUCCESS)了
+DGMGRL> show database cdb1
+
+Database - cdb1
+
+  Role:               PRIMARY
+  Intended State:     TRANSPORT-ON
+  Instance(s):
+    cdb1
+
+Database Status:
+SUCCESS
+
+DGMGRL> show database cdb1_stby
+
+Database - cdb1_stby
+
+  Role:               PHYSICAL STANDBY
+  Intended State:     APPLY-ON
+  Transport Lag:      0 seconds (computed 1 second ago)
+  Apply Lag:          0 seconds (computed 1 second ago)
+  Average Apply Rate: 0 Byte/s
+  Real Time Query:    ON
+  Instance(s):
+    cdb1
+
+Database Status:
+SUCCESS
+
+DGMGRL>
+
+
+### 14.這時候在重新啟動FSFO (在standby node啟動,不是單純dgmgl連入,而是ssh到standby node,然後再dgmgl連入standby)
+~~~
+ssh root@192.168.56.42
+su - oracle
+dgmgrl sys/P_ssw0rd321@cdb1_stby
+
+show fast_start failover
+ENABLE FAST_START FAILOVER;
+start observer;
+~~~
+[oracle@ora19c02 ~]$ dgmgrl sys/P_ssw0rd321@cdb1_stby
+DGMGRL> show fast_start failover
+
+Fast-Start Failover:  Disabled
+
+  Protection Mode:    MaxPerformance
+  Lag Limit:          30 seconds
+
+  Threshold:          60 seconds
+  Active Target:      (none)
+  Potential Targets:  "cdb1_stby"
+    cdb1_stby  valid
+  Observer:           (none)
+  Shutdown Primary:   TRUE
+  Auto-reinstate:     TRUE
+  Observer Reconnect: (none)
+  Observer Override:  FALSE
+
+Configurable Failover Conditions
+  Health Conditions:
+    Corrupted Controlfile          YES
+    Corrupted Dictionary           YES
+    Inaccessible Logfile            NO
+    Stuck Archiver                  NO
+    Datafile Write Errors          YES
+
+  Oracle Error Conditions:
+    (none)
+
+DGMGRL> ENABLE FAST_START FAILOVER;
+Warning: ORA-16827: Flashback Database is disabled
+
+Enabled in Potential Data Loss Mode.
+DGMGRL> start observer;
+[W000 2024-07-16T17:42:14.058+08:00] FSFO target standby is cdb1_stby
+Observer 'ora19c02' started
+[W000 2024-07-16T17:42:14.229+08:00] Observer trace level is set to USER
+[W000 2024-07-16T17:42:14.229+08:00] Try to connect to the primary.
+[W000 2024-07-16T17:42:14.229+08:00] Try to connect to the primary cdb1.
+[W000 2024-07-16T17:42:14.237+08:00] The standby cdb1_stby is ready to be a FSFO target
+[W000 2024-07-16T17:42:15.248+08:00] Connection to the primary restored!
+[W000 2024-07-16T17:42:17.254+08:00] Disconnecting from database cdb1.
+
+(畫面停住, 這時候已經知道其實已經FSFO有作用了)
+
+
+
+### 15.回歸正式模擬故障,primary給強制關閉,觀察監控內容
+## 15.1 強制關閉primary 模擬故障
+SQL> select name, open_mode, db_unique_name from v$database;
+
+NAME      OPEN_MODE            DB_UNIQUE_NAME
+--------- -------------------- ------------------------------
+CDB1      READ WRITE           cdb1
+
+SQL> shutdown abort;
+ORACLE instance shut down.
+
+
+## 15.2 查看監控有failover動作
+!!! 畫面 !!!
+[W000 2024-07-16T17:42:14.058+08:00] FSFO target standby is cdb1_stby
+Observer 'ora19c02' started
+[W000 2024-07-16T17:42:14.229+08:00] Observer trace level is set to USER
+[W000 2024-07-16T17:42:14.229+08:00] Try to connect to the primary.
+[W000 2024-07-16T17:42:14.229+08:00] Try to connect to the primary cdb1.
+[W000 2024-07-16T17:42:14.237+08:00] The standby cdb1_stby is ready to be a FSFO target
+[W000 2024-07-16T17:42:15.248+08:00] Connection to the primary restored!
+[W000 2024-07-16T17:42:17.254+08:00] Disconnecting from database cdb1.
+[W000 2024-07-16T17:44:08.701+08:00] Primary database cannot be reached.
+[W000 2024-07-16T17:44:08.701+08:00] Fast-Start Failover threshold has not exceeded. Retry for the next 60 seconds
+[W000 2024-07-16T17:44:09.726+08:00] Try to connect to the primary.
+[W000 2024-07-16T17:44:11.120+08:00] Primary database cannot be reached.
+[W000 2024-07-16T17:44:12.124+08:00] Try to connect to the primary.
+[W000 2024-07-16T17:45:06.526+08:00] Primary database cannot be reached.
+[W000 2024-07-16T17:45:06.526+08:00] Fast-Start Failover threshold has not exceeded. Retry for the next 2 seconds
+[W000 2024-07-16T17:45:07.528+08:00] Try to connect to the primary.
+[W000 2024-07-16T17:45:09.270+08:00] Primary database cannot be reached.
+[W000 2024-07-16T17:45:09.270+08:00] Fast-Start Failover threshold has expired.
+[W000 2024-07-16T17:45:09.270+08:00] Try to connect to the standby.
+[W000 2024-07-16T17:45:09.270+08:00] Making a last connection attempt to primary database before proceeding with Fast-Start Failover.
+[W000 2024-07-16T17:45:09.270+08:00] Check if the standby is ready for failover.
+[S002 2024-07-16T17:45:09.275+08:00] Fast-Start Failover started...
+
+2024-07-16T17:45:09.275+08:00
+Initiating Fast-Start Failover to database "cdb1_stby"...
+[S002 2024-07-16T17:45:09.275+08:00] Initiating Fast-start Failover.
+Performing failover NOW, please wait...
+Failover succeeded, new primary is "cdb1_stby"
+2024-07-16T17:45:28.543+08:00
+[S002 2024-07-16T17:45:28.543+08:00] Fast-Start Failover finished...
+[W000 2024-07-16T17:45:28.543+08:00] Failover succeeded. Restart pinging.
+[W000 2024-07-16T17:45:28.550+08:00] Primary database has changed to cdb1_stby.  <== 成功切換
+
+[W000 2024-07-16T17:45:28.555+08:00] Try to connect to the primary.
+[W000 2024-07-16T17:45:28.555+08:00] Try to connect to the primary cdb1_stby.
+[W000 2024-07-16T17:45:28.662+08:00] Connection to the primary restored!
+[W000 2024-07-16T17:45:28.670+08:00] The standby cdb1 needs to be reinstated
+[W000 2024-07-16T17:45:28.670+08:00] Try to connect to the new standby cdb1.
+[W000 2024-07-16T17:45:29.670+08:00] Disconnecting from database cdb1_stby.
+[W000 2024-07-16T17:45:30.672+08:00] Connection to the new standby restored!
+[W000 2024-07-16T17:45:31.702+08:00] Failed to ping the new standby.
+[W000 2024-07-16T17:45:32.712+08:00] Try to connect to the new standby cdb1.
+[W000 2024-07-16T17:45:34.740+08:00] Connection to the new standby restored!
+[W000 2024-07-16T17:45:34.743+08:00] Failed to ping the new standby.
+...(重複)
+
+!!!!!!!!!!!!
+
+
+### 16.確認新primary的DB狀態
+要重新連入,確認PDB1已經自動狀態為 READ WRITE
+
+SQL> show pdbs
+ERROR:
+ORA-03135: connection lost contact
+Process ID: 13991
+Session ID: 237 Serial number: 18831
+
+
+SP2-1545: This feature requires Database availability.
+SQL> show pdbs
+ERROR:
+ORA-03114: not connected to ORACLE
+
+
+SP2-1545: This feature requires Database availability.
+SQL> conn / as sysdba
+Connected.
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 PDB1                           READ WRITE NO
+SQL>
+SQL> select name, open_mode, db_unique_name from v$database;
+
+NAME      OPEN_MODE            DB_UNIQUE_NAME
+--------- -------------------- ------------------------------
+CDB1      READ WRITE           CDB1_STBY
+
+SQL>
+
+
+### 17.查看新primary的資料是否存在
+之前建立的table內容檢查OK
+SQL> alter session set container=PDB1;
+
+Session altered.
+
+SQL> select * from t1;
+
+        ID
+----------
+       100
+
+SQL>
+
+
+### 18.這時候把舊的primary給啟動會失敗 ORA-16649
+這是Oracle保護避免資料混淆的保護機制,很棒
+
+SQL> startup
+ORACLE instance started.
+
+Total System Global Area 1191178288 bytes
+Fixed Size                  9134128 bytes
+Variable Size             318767104 bytes
+Database Buffers          855638016 bytes
+Redo Buffers                7639040 bytes
+Database mounted.
+ORA-16649: possible failover to another database prevents this database from
+being opened
+
+
+SQL> select name, open_mode, db_unique_name from v$database;
+
+NAME      OPEN_MODE            DB_UNIQUE_NAME
+--------- -------------------- ------------------------------
+CDB1      MOUNTED              cdb1
+
+
+
+### 19.這時監控訊息, 舊primary(新standby)會重複錯誤訊息
+Error: ORA-16795: the standby database needs to be re-created
+
+!!! 畫面 !!!
+2024-07-16T17:54:39.224+08:00
+[W000 2024-07-16T17:54:40.222+08:00] Failed to reinstate database cdb1, status = ORA-16795. Will NOT retry.
+[W000 2024-07-16T17:54:42.227+08:00] The standby cdb1 needs to be reinstated
+[W000 2024-07-16T17:54:42.227+08:00] Try to connect to the new standby cdb1.
+[W000 2024-07-16T17:54:43.227+08:00] Connection to the new standby restored!
+[W000 2024-07-16T17:54:45.229+08:00] Try to connect to the primary cdb1_stby.
+[W000 2024-07-16T17:54:46.246+08:00] Connection to the primary restored!
+[W000 2024-07-16T17:54:47.254+08:00] Wait for new primary to be ready to reinstate.
+[W000 2024-07-16T17:54:48.255+08:00] New primary is now ready to reinstate.
+[W000 2024-07-16T17:54:48.255+08:00] Issuing REINSTATE command.
+
+2024-07-16T17:54:48.255+08:00
+Initiating reinstatement for database "cdb1"...
+Reinstating database "cdb1", please wait...
+Error: ORA-16795: the standby database needs to be re-created
+
+Failed.
+Reinstatement of database "cdb1" failed
+...(一直重複)
+!!!!!!!!!!!!!!!!!!!!
+
+
+### 20.停止FSFO
+DGMGRL> stop observer;
+DGMGRL> disable FAST_START FAILOVER;
+
+### 21.這邊我多觀察一下 protection_level 欄位對照failover後的 新舊primary內容之不同
+~~~
+select db_unique_name,database_role,protection_level from v$database; 
+~~~
+
+  新primary:  (cdb1_stby1)
+SQL> select db_unique_name,database_role,protection_level from v$database;
+DB_UNIQUE_NAME                 DATABASE_ROLE    PROTECTION_LEVEL
+------------------------------ ---------------- --------------------
+CDB1_STBY                      PRIMARY          MAXIMUM PERFORMANCE
+
+
+  舊primary: (cdb1)
+SQL> select db_unique_name,database_role,protection_level from v$database;
+DB_UNIQUE_NAME                 DATABASE_ROLE    PROTECTION_LEVEL
+------------------------------ ---------------- --------------------
+cdb1                           PRIMARY          UNPROTECTED
+
+
+### 23.嘗試在舊的primary做 REINSTATE 轉新standby (失敗)
+ 錯誤訊息:  ORA-16795 需要DB重建
+~~~
+dgmgrl sys/P_ssw0rd321@cdb1_stby  <=新primary
+show database cdb1  <=舊primary
+REINSTATE DATABASE cdb1;  <=嘗試轉為新standby,一般用在正常switchover
+~~~
+
+[oracle@ora19c01 ~]$ dgmgrl sys/P_ssw0rd321@cdb1_stby
+DGMGRL> show database cdb1
+...(skip)
+Database Status:
+DISABLED - ORA-16795: the standby database needs to be re-created
+
+DGMGRL> REINSTATE DATABASE cdb1;
+Reinstating database "cdb1", please wait...
+Error: ORA-16795: the standby database needs to be re-created
+
+Failed.
+Reinstatement of database "cdb1" failed
+
+所以只能乖乖重建DB來做新standby了
+
+
+### 24.這次先把新master給開啟flashback
+(這步之前做失敗很多次重建新standby,有些記錄我放在最下面
+所以我不確定是否包含這次是否會成功,所以從這邊開始
+我用 master 和 slave來稱呼. 以方便我自己區隔
+)
+
+(新master)
+[oracle@ora19c02 ~]$ sqlplus / as sysdba
+SQL> shutdown immediate;
+SQL> startup mount;
+SQL> ALTER DATABASE FLASHBACK on;
+SQL> alter database open;
+
+
+### 25.舊master的DB為read only狀態,無法強制開啟.
+要轉成新slave也是無效,後來發現要先把FSFO的舊master給disable掉,才能轉成新Slave
+
+## 25.1 舊master雖然open force但是依然 READ ONLY
+SQL> ALTER PLUGGABLE DATABASE PDB1 OPEN FORCE;
+Pluggable database altered.
+SQL> SELECT name, open_mode FROM v$pdbs WHERE name = 'PDB1';
+NAME
+--------------------------------------------------------------------------------
+OPEN_MODE
+----------
+PDB1
+READ ONLY
+
+
+## 25.2 舊master無法轉為新slave (ORA-16802)
+SQL>  alter database commit to switchover to physical standby;
+ alter database commit to switchover to physical standby
+*
+ERROR at line 1:
+ORA-16802: Database role change operation permitted only by Data Guard broker
+when fast-start failover is enabled.
+
+## 25.3 舊master也無法轉為 primary
+SQL> shutdown immediate
+SQL> startup nomount;
+SQL> alter database mount;
+SQL>  alter database commit to switchover to primary;
+ alter database commit to switchover to primary
+*
+ERROR at line 1:
+ORA-16802: Database role change operation permitted only by Data Guard broker
+when fast-start failover is enabled.
+
+## 25.4 舊master也無法轉換為 物理slave
+SQL> ALTER DATABASE CONVERT TO PHYSICAL STANDBY;
+ALTER DATABASE CONVERT TO PHYSICAL STANDBY
+*
+ERROR at line 1:
+ORA-16802: Database role change operation permitted only by Data Guard broker
+when fast-start failover is enabled.
+
+
+## 25.5 後來在新master那邊把FSFO中 舊master給 disable就可以轉成 物理slave(新Slave)
+
+  - 1.用dgmgrl 連到新master
+  [oracle@ora19c02 ~]$ dgmgrl sys/P_ssw0rd321@cdb1_stby
+  - 2.把舊master的DB給 DISABLE
+  DGMGRL> disable database cdb1;
+  Disabled.
+
+  - 3.舊master那邊這時候再下SQL就可以轉換成物理slave(新Slave)
+  SQL> ALTER DATABASE CONVERT TO PHYSICAL STANDBY;
+  Database altered.
+
+
+
+### 26.在舊master轉為物理slave後(新Slave),就可以轉成"資料庫的受控恢復模式" 
+這是 Oracle Data Guard 中用來啟動受控恢復模式的命令.
+( AI輔助說明:
+說明
+ALTER DATABASE：這是修改資料庫狀態的命令。
+RECOVER MANAGED STANDBY DATABASE：這部分指示資料庫進行受控恢復，這是 Data Guard 環境中常用的操作，用於將備庫資料庫與主庫資料庫保持同步。
+DISCONNECT FROM SESSION：這部分指示資料庫在啟動恢復操作後斷開與當前會話的連接，允許恢復操作在後台繼續進
+)
+確認DB狀態為 mount,然後下SQL: ALTER DATABASE RECOVER MANAGED STANDBY DATABASE DISCONNECT FROM SESSION;
+
+SQL> select open_mode from v$database;
+OPEN_MODE
+--------------------
+MOUNTED
+
+SQL> ALTER DATABASE RECOVER MANAGED STANDBY DATABASE DISCONNECT FROM SESSION;
+Database altered.
+
+
+### 27.然後再到新master的 dgmgrl 來把新Slave DB給 ENABLE
+DGMGRL> SHOW CONFIGURATION;
+Configuration - my_dg_config
+
+  Protection Mode: MaxPerformance
+  Members:
+  cdb1_stby - Primary database
+    cdb1      - Physical standby database (disabled)
+      ORA-16749: The member was disabled manually.
+
+Fast-Start Failover:  Disabled
+
+Configuration Status:
+SUCCESS   (status updated 8 seconds ago)
+
+DGMGRL> enable database cdb1;  <== 這個指令
+Enabled.
+DGMGRL>  SHOW CONFIGURATION;
+
+Configuration - my_dg_config
+
+  Protection Mode: MaxPerformance
+  Members:
+  cdb1_stby - Primary database
+    cdb1      - Physical standby database
+
+Fast-Start Failover:  Disabled
+
+Configuration Status:
+SUCCESS   (status updated 24 seconds ago)
+
+
+### 28.用 dgmgrl 來查看DB狀態,這時候新Slave狀態已經成功了
+(新Slave)
+DGMGRL> show database cdb1;
+Database - cdb1
+
+  Role:               PHYSICAL STANDBY
+  Intended State:     APPLY-ON
+  Transport Lag:      0 seconds (computed 0 seconds ago)
+  Apply Lag:          0 seconds (computed 0 seconds ago)
+  Average Apply Rate: 41.00 KByte/s
+  Real Time Query:    OFF
+  Instance(s):
+    cdb1
+
+Database Status:
+SUCCESS
+
+(新master)
+DGMGRL> show database cdb1_stby;
+
+Database - cdb1_stby
+
+  Role:               PRIMARY
+  Intended State:     TRANSPORT-ON
+  Instance(s):
+    cdb1
+
+Database Status:
+SUCCESS
+
+
+### 29.這時候只要再開啟FSFO就可以了 (注意是在新Slave那邊啟動)
+[oracle@ora19c01 ~]$ dgmgrl sys/P_ssw0rd321@cdb1
+DGMGRL> ENABLE FAST_START FAILOVER;
+Enabled in Potential Data Loss Mode.
+DGMGRL> start observer;
+[W000 2024-07-18T15:18:45.803+08:00] This observer is no longer registered with the configuration.
+[W000 2024-07-18T15:18:46.824+08:00] FSFO target standby is cdb1
+Observer 'ora19c01' started
+[W000 2024-07-18T15:18:46.922+08:00] Observer trace level is set to USER
+[W000 2024-07-18T15:18:46.922+08:00] Try to connect to the primary.
+[W000 2024-07-18T15:18:46.923+08:00] Try to connect to the primary cdb1_stby.
+[W000 2024-07-18T15:18:46.934+08:00] The standby cdb1 is ready to be a FSFO target
+[W000 2024-07-18T15:18:47.934+08:00] Connection to the primary restored!
+[W000 2024-07-18T15:18:49.953+08:00] Disconnecting from database cdb1_stby.
+...(畫面停住,很正常)
+
+
+### 30.關閉terminal後,用全新的terminal來連入dgmgrl看 Observer會因為關閉terminal而中斷產生錯誤
+也表示 start observer 是在前景運行,會被terminal關閉而中斷
+(錯誤 ORA-16820)
+
+[oracle@ora19c01 ~]$ dgmgrl sys/P_ssw0rd321@cdb1
+DGMGRL> show configuration;
+Configuration - my_dg_config
+  Protection Mode: MaxPerformance
+  Members:
+  cdb1_stby - Primary database
+    Error: ORA-16820: fast-start failover observer is no longer observing this database
+
+    cdb1      - (*) Physical standby database
+      Error: ORA-16820: fast-start failover observer is no longer observing this database
+Fast-Start Failover: Enabled in Potential Data Loss Mode
+Configuration Status:
+ERROR   (status updated 37 seconds ago)
+
+
+### 31.解決方法: 先停止observer, 然後在shell那邊啟用背景啟動(nohup ... &)
+## 31.1 停止observer
+DGMGRL> stop observer;
+Observer stopped.
+DGMGRL> exit
+
+
+## 31.2 背景啟用observer (dgmgrl -silent 搭配 nohup ... &) 
+~~~
+nohup dgmgrl -silent sys/P_ssw0rd321@cdb1 "start observer" &
+~~~
+
+[oracle@ora19c01 ~]$ nohup dgmgrl -silent sys/P_ssw0rd321@cdb1 "start observer" &
+[1] 8398
+[oracle@ora19c01 ~]$ nohup: ignoring input and appending output to ‘nohup.out’
+[oracle@ora19c01 ~]$ cat nohup.out
+Connected to "cdb1"
+[W000 2024-07-18T15:47:00.933+08:00] This observer is no longer registered with the configuration.
+[W000 2024-07-18T15:47:01.950+08:00] FSFO target standby is cdb1
+Observer 'ora19c01' started
+[W000 2024-07-18T15:47:02.033+08:00] Observer trace level is set to USER
+[W000 2024-07-18T15:47:02.033+08:00] Try to connect to the primary.
+[W000 2024-07-18T15:47:02.033+08:00] Try to connect to the primary cdb1_stby.
+[W000 2024-07-18T15:47:02.044+08:00] The standby cdb1 is ready to be a FSFO target
+[W000 2024-07-18T15:47:03.044+08:00] Connection to the primary restored!
+[W000 2024-07-18T15:47:05.066+08:00] Disconnecting from database cdb1_stby.
+[oracle@ora19c01 ~]$
+
+
+### 32.關閉所有terminal後,再開新terminal來查看~~~成功!! 辛苦我自己了James!
+[oracle@ora19c01 ~]$ dgmgrl sys/P_ssw0rd321@cdb1
+DGMGRL> SHOW CONFIGURATION;
+
+Configuration - my_dg_config
+
+  Protection Mode: MaxPerformance
+  Members:
+  cdb1_stby - Primary database
+    cdb1      - (*) Physical standby database
+
+Fast-Start Failover: Enabled in Potential Data Loss Mode
+
+Configuration Status:
+SUCCESS   (status updated 28 seconds ago)
+
+DGMGRL>
+
+
+
+### 33.最後測試SWITCHOVER是否正常,使最終回歸一開始的cdb1(master) , cdb1_stby(slave)
+## 33.1 使用 switchover 指令
+(這邊又發生錯誤.似乎是TNS listener那邊沒設好, 其實不影響太大,只要把slave那邊DB手動啟動就好)
+DGMGRL> SWITCHOVER TO cdb1;
+Performing switchover NOW, please wait...
+New primary database "cdb1" is opening...
+Operation requires start up of instance "cdb1" on database "cdb1_stby"
+Starting instance "cdb1"...
+Unable to connect to database using (DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=ora19c02)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=CDB1_STBY_DGMGRL)(INSTANCE_NAME=cdb1)(SERVER=DEDICATED)))
+ORA-12514: TNS:listener does not currently know of service requested in connect descriptor
+
+Failed.
+
+Please complete the following steps to finish switchover:
+        start up and mount instance "cdb1" of database "cdb1_stby"
+
+DGMGRL>
+
+
+## 33.2 查看狀態cdb1已經成為master,而 cdb1_stby 那邊有錯誤 ORA-1034
+DGMGRL> show configuration
+
+Configuration - my_dg_config
+
+  Protection Mode: MaxPerformance
+  Members:
+  cdb1      - Primary database
+    Error: ORA-16825: multiple errors or warnings, including fast-start failover-related errors or warnings, detected for the database
+
+    cdb1_stby - (*) Physical standby database
+      Error: ORA-1034: ORACLE not available
+
+Fast-Start Failover: Enabled in Potential Data Loss Mode
+
+Configuration Status:
+ERROR   (status updated 49 seconds ago)
+
+DGMGRL>
+
+## 33.3 這時候master(cdb1)為READ WRITE正常狀態,而slave(cdb1_stby)則DB關閉
+(cdb1)
+SQL> select db_unique_name,open_mode from gv$database;
+
+DB_UNIQUE_NAME                 OPEN_MODE
+------------------------------ --------------------
+cdb1                           READ WRITE
+
+(cdb1_stby)
+SQL> select db_unique_name,open_mode from gv$database;
+select db_unique_name,open_mode from gv$database
+*
+ERROR at line 1:
+ORA-01034: ORACLE not available
+Process ID: 0
+Session ID: 0 Serial number: 0
+
+SQL> show parameter
+ORA-01034: ORACLE not available
+Process ID: 0
+Session ID: 0 Serial number: 0
+
+## 33.4 把Slave給DB手動啟動 (可以直接startup就好)
+SQL> startup mount;
+SQL> alter database open;
+
+
+## 33.5 使用dgmgrl查看狀態成功!
+DGMGRL> /
+Configuration - my_dg_config
+
+  Protection Mode: MaxPerformance
+  Members:
+  cdb1      - Primary database
+    cdb1_stby - (*) Physical standby database
+
+Fast-Start Failover: Enabled in Potential Data Loss Mode
+
+Configuration Status:
+SUCCESS   (status updated 7 seconds ago)
+
+DGMGRL>
+
+
+### 34 修正一下Slave那邊的TNS listener
+## 34.1 查看一下listener的路徑
+[oracle@ora19c02 ~]$ lsnrctl status |grep Parameter
+Listener Parameter File   /opt/oracle/product/19c/dbhome_1/network/admin/listener.ora
+
+## 34.2 確認內容, 第 11 行那邊有錯要修正
+[oracle@ora19c02 ~]$ nl /opt/oracle/product/19c/dbhome_1/network/admin/listener.ora
+     1  LISTENER =
+     2    (DESCRIPTION_LIST =
+     3      (DESCRIPTION =
+     4        (ADDRESS = (PROTOCOL = TCP)(HOST = 192.168.56.42)(PORT = 1521))
+     5        (ADDRESS = (PROTOCOL = IPC)(KEY = EXTPROC1521))
+     6      )
+     7    )
+     8  SID_LIST_LISTENER =
+     9    (SID_LIST =
+    10      (SID_DESC =
+    11        (GLOBAL_DBNAME = cdb1_DGMGRL)   <== 這裡錯了,對照 33.1 的錯誤來修正
+    12        (ORACLE_HOME = /opt/oracle/product/19c/dbhome_1)
+    13        (SID_NAME = cdb1)
+    14      )
+    15    )
+    16  ADR_BASE_LISTENER = /opt/oracle
+[oracle@ora19c02 ~]$
+
+## 34.3 修正內容
+[oracle@ora19c02 ~]$ vi /opt/oracle/product/19c/dbhome_1/network/admin/listener.ora
+[oracle@ora19c02 ~]$ nl /opt/oracle/product/19c/dbhome_1/network/admin/listener.ora
+     1  LISTENER =
+     2    (DESCRIPTION_LIST =
+     3      (DESCRIPTION =
+     4        (ADDRESS = (PROTOCOL = TCP)(HOST = 192.168.56.42)(PORT = 1521))
+     5        (ADDRESS = (PROTOCOL = IPC)(KEY = EXTPROC1521))
+     6      )
+     7    )
+     8  SID_LIST_LISTENER =
+     9    (SID_LIST =
+    10      (SID_DESC =
+    11        (GLOBAL_DBNAME = CDB1_STBY_DGMGRL)  <== 這裡已經修正了
+    12        (ORACLE_HOME = /opt/oracle/product/19c/dbhome_1)
+    13        (SID_NAME = cdb1)
+    14      )
+    15    )
+    16  ADR_BASE_LISTENER = /opt/oracle
+[oracle@ora19c02 ~]$
+
+## 34.4 重載或重啟TNS listener
+[oracle@ora19c02 ~]$ lsnrctl reload
+
+
+### 35.這時再來switchover測試 成功!!!
+[oracle@ora19c01 ~]$ dgmgrl sys/P_ssw0rd321@cdb1
+DGMGRL> switchover to cdb1_stby;
+Performing switchover NOW, please wait...
+Operation requires a connection to database "cdb1_stby"
+Connecting ...
+Connected to "CDB1_STBY"
+Connected as SYSDBA.
+New primary database "cdb1_stby" is opening...
+Operation requires start up of instance "cdb1" on database "cdb1"
+Starting instance "cdb1"...
+Connected to an idle instance.
+ORACLE instance started.
+Connected to "cdb1"
+Database mounted.
+Database opened.
+Connected to "cdb1"
+Switchover succeeded, new primary is "cdb1_stby"
+DGMGRL>
+
+### 36.我這邊再做一次switchover,除了測試兩邊都能正常切換外,也是要回歸一開始的
+cdb1 (master) 和 cdb1_stby (slave) 狀態  -- 終於完成!!!
+
+說明:
+一開始切換完馬上查看狀態可能會有 ERROR,那是正常的,因為正在切換過程中.
+等一會就會變成 SUCCESS
+
+DGMGRL> show configuration
+
+Configuration - my_dg_config
+
+  Protection Mode: MaxPerformance
+  Members:
+  cdb1_stby - Primary database
+    cdb1      - (*) Physical standby database
+
+Fast-Start Failover: Enabled in Potential Data Loss Mode
+
+Configuration Status:
+SUCCESS   (status updated 57 seconds ago)
+
+DGMGRL> switchover to cdb1
+Performing switchover NOW, please wait...
+Operation requires a connection to database "cdb1"
+Connecting ...
+Connected to "cdb1"
+Connected as SYSDBA.
+New primary database "cdb1" is opening...
+Operation requires start up of instance "cdb1" on database "cdb1_stby"
+Starting instance "cdb1"...
+Connected to an idle instance.
+ORACLE instance started.
+Connected to "CDB1_STBY"
+Database mounted.
+Database opened.
+Connected to "CDB1_STBY"
+Switchover succeeded, new primary is "cdb1"
+DGMGRL> show configuration
+
+Configuration - my_dg_config
+
+  Protection Mode: MaxPerformance
+  Members:
+  cdb1      - Primary database
+    Error: ORA-16825: multiple errors or warnings, including fast-start failover-related errors or warnings, detected for the database
+
+    cdb1_stby - (*) Physical standby database
+      Error: ORA-1033: ORACLE initialization or shutdown in progress
+
+Fast-Start Failover: Enabled in Potential Data Loss Mode
+
+Configuration Status:
+ERROR   (status updated 33 seconds ago)
+
+DGMGRL>
+DGMGRL> show configuration
+
+Configuration - my_dg_config
+
+  Protection Mode: MaxPerformance
+  Members:
+  cdb1      - Primary database
+    cdb1_stby - (*) Physical standby database
+
+Fast-Start Failover: Enabled in Potential Data Loss Mode
+
+Configuration Status:
+SUCCESS   (status updated 58 seconds ago)
+
+DGMGRL>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+XXX 以下錯誤失敗,給我自己紀錄學習 XXXXXXXXXXXXXXXXXXX
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+XXX 23.在新的primary做備份,然後搬移備份檔到舊primary
+ ** 注意: 除了 備份檔案 還有 控制檔 
+(另一種做法是把DB相關實體檔案都砍掉,如同全新standby空的那種做法,  但這次我換另一種做法,也可以熟悉一下異地備份還原流程)
+
+XX 23.1 在新primary那台做完整備份 (cdb1_stby)
+~~~
+rman target sys/P_ssw0rd321  (在新primary那台)
+BACKUP DATABASE PLUS ARCHIVELOG;
+~~~
+[oracle@ora19c02 ~]$ rman target sys/P_ssw0rd321
+
+...(skip)
+connected to target database: CDB1 (DBID=1124968908)
+RMAN> BACKUP DATABASE PLUS ARCHIVELOG;
+...(skip)
+channel ORA_DISK_1: backup set complete, elapsed time: 00:00:03
+channel ORA_DISK_1: starting full datafile backup set
+channel ORA_DISK_1: specifying datafile(s) in backup set
+input datafile file number=00006 name=/u01/app/oracle/cdb1/pdbseed/sysaux01.dbf
+input datafile file number=00005 name=/u01/app/oracle/cdb1/pdbseed/system01.dbf
+input datafile file number=00008 name=/u01/app/oracle/cdb1/pdbseed/undotbs01.dbf
+channel ORA_DISK_1: starting piece 1 at 17-JUL-24
+channel ORA_DISK_1: finished piece 1 at 17-JUL-24
+piece handle=/u01/app/oracle/cdb1/CDB1_STBY/089B10662AF7162BE065926A3A92BDE2/backupset/2024_07_17/o1_mf_nnndf_TAG20240717T161002_m9gz353f_.bkp tag=TAG20240717T161002 comment=NONE
+channel ORA_DISK_1: backup set complete, elapsed time: 00:00:03
+Finished backup at 17-JUL-24
+
+Starting backup at 17-JUL-24
+current log archived
+using channel ORA_DISK_1
+channel ORA_DISK_1: starting archived log backup set
+channel ORA_DISK_1: specifying archived log(s) in backup set
+input archived log thread=1 sequence=4 RECID=13 STAMP=1174579816
+channel ORA_DISK_1: starting piece 1 at 17-JUL-24
+channel ORA_DISK_1: finished piece 1 at 17-JUL-24
+piece handle=/u01/app/oracle/cdb1/CDB1_STBY/backupset/2024_07_17/o1_mf_annnn_TAG20240717T161016_m9gz3890_.bkp tag=TAG20240717T161016 comment=NONE
+channel ORA_DISK_1: backup set complete, elapsed time: 00:00:01
+Finished backup at 17-JUL-24
+
+Starting Control File and SPFILE Autobackup at 17-JUL-24
+piece handle=/u01/app/oracle/cdb1/CDB1_STBY/autobackup/2024_07_17/o1_mf_s_1174579817_m9gz39hn_.bkp comment=NONE
+Finished Control File and SPFILE Autobackup at 17-JUL-24
+
+
+XX 23.2 查看備份路徑 (雖然剛才就已經有顯示了,不過這邊還是要做,來熟悉RMAN用法) 
+  看 Piece Name 那一行就是備份路徑跟檔名
+~~~
+LIST BACKUP;
+或
+LIST BACKUP SUMMARY;
+LIST BACKUPSET <key>; <=通常是最下面最大數字那個,因為剛備份完
+
+EXIT;
+~~~
+
+
+RMAN> LIST BACKUP;
+List of Backup Sets
+===================
+...(skip)
+BS Key  Type LV Size       Device Type Elapsed Time Completion Time
+------- ---- -- ---------- ----------- ------------ ---------------
+9       Full    17.95M     DISK        00:00:00     17-JUL-24
+        BP Key: 9   Status: AVAILABLE  Compressed: NO  Tag: TAG20240717T161017
+        Piece Name: /u01/app/oracle/cdb1/CDB1_STBY/autobackup/2024_07_17/o1_mf_s_1174579817_m9gz39hn_.bkp
+  SPFILE Included: Modification time: 17-JUL-24
+  SPFILE db_unique_name: CDB1_STBY
+  Control File Included: Ckp SCN: 3258150      Ckp time: 17-JUL-24
+
+RMAN> exit
+
+** 所以可以知道備份目錄在 /u01/app/oracle/cdb1/CDB1_STBY/autobackup/2024_07_17/
+** 而備份檔名 o1_mf_s_1174579817_m9gz39hn_.bkp
+
+
+XX 23.3 把備份檔案搬移到舊primary (cdb1_stby => cdb1)
+~~~
+scp <備份目錄>/<備份檔> oracle@<舊primary主機>:<路徑>
+~~~
+[oracle@ora19c02 ~]$ scp /u01/app/oracle/cdb1/CDB1_STBY/autobackup/2024_07_17/o1_mf_s_1174579817_m9gz39hn_.bkp oracle@192.168.56.41:/tmp
+...(skip)
+o1_mf_s_1174579817_m9gz39hn_.bkp                100%   18MB  86.6MB/s   00:00
+[oracle@ora19c02 ~]$
+
+
+XX 23.4 (非必要)對比兩台的備份檔是否一致
+我這邊用看檔案大小和 md5sum 來檢驗
+~~~
+ll -h <備份檔>
+md5sum <備份檔>
+~~~
+
+[oracle@ora19c02 ~]$ ls -lh /u01/app/oracle/cdb1/CDB1_STBY/autobackup/2024_07_17/o1_mf_s_1174579817_m9gz39hn_.bkp
+-rw-r-----. 1 oracle oinstall 18M Jul 17 16:10 /u01/app/oracle/cdb1/CDB1_STBY/autobackup/2024_07_17/o1_mf_s_1174579817_m9gz39hn_.bkp
+[oracle@ora19c02 ~]$ md5sum /u01/app/oracle/cdb1/CDB1_STBY/autobackup/2024_07_17/o1_mf_s_1174579817_m9gz39hn_.bkp
+2adb9378de60696861cd8de406b77ffd  /u01/app/oracle/cdb1/CDB1_STBY/autobackup/2024_07_17/o1_mf_s_1174579817_m9gz39hn_.bkp
+[oracle@ora19c02 ~]$
+
+[oracle@ora19c01 ~]$ ls -lh /tmp/o1_mf_s_1174579817_m9gz39hn_.bkp
+-rw-r-----. 1 oracle oinstall 18M Jul 17 17:12 /tmp/o1_mf_s_1174579817_m9gz39hn_.bkp
+[oracle@ora19c01 ~]$ md5sum /tmp/o1_mf_s_1174579817_m9gz39hn_.bkp
+2adb9378de60696861cd8de406b77ffd  /tmp/o1_mf_s_1174579817_m9gz39hn_.bkp
+
+
+大小都是18M 且md5值也相同 2adb9378de60696861cd8de406b77ffd
+
+
+## 23.5 查看控制檔(controlfile)位置
+(因為之前備份檔已經含有控制檔,所以不用搬移.如果沒有包含要記得搬移) 
+~~~
+rman target sys/P_ssw0rd321@cdb1_stby <= 新primary
+LIST BACKUP OF CONTROLFILE;
+~~~
+
+[oracle@ora19c02 CDB1_STBY]$ rman target sys/P_ssw0rd321@cdb1_stby
+...(skip)
+RMAN> LIST BACKUP OF CONTROLFILE;
+
+using target database control file instead of recovery catalog
+
+List of Backup Sets
+===================
+...(skip)
+BS Key  Type LV Size       Device Type Elapsed Time Completion Time
+------- ---- -- ---------- ----------- ------------ ---------------
+9       Full    17.95M     DISK        00:00:00     17-JUL-24
+        BP Key: 9   Status: AVAILABLE  Compressed: NO  Tag: TAG20240717T161017
+        Piece Name: /u01/app/oracle/cdb1/CDB1_STBY/autobackup/2024_07_17/o1_mf_s_1174579817_m9gz39hn_.bkp
+  Control File Included: Ckp SCN: 3258150      Ckp time: 17-JUL-24
+
+RMAN> EXIT;
+
+
+XXX 24.在舊的Primary做還原
+XX 24.1 把DB給關閉,然後啟動為 nomount
+~~~
+sqlplus / as sysdba <= 舊primary
+shutdown immediate;
+startup nomount;
+~~~
+
+XX 24.2 RMAN進入,然後還原控制檔
+~~~
+rman target /
+RESTORE CONTROLFILE FROM '<控制檔/含控制檔的備份檔>';
+EXIT;
+~~~
+
+[oracle@ora19c01 ~]$ rman target /
+...(skip)
+connected to target database: CDB1 (not mounted)
+
+RMAN> RESTORE CONTROLFILE FROM '/tmp/o1_mf_s_1174579817_m9gz39hn_.bkp';
+
+Starting restore at 17-JUL-24
+using target database control file instead of recovery catalog
+allocated channel: ORA_DISK_1
+channel ORA_DISK_1: SID=4 device type=DISK
+
+channel ORA_DISK_1: restoring control file
+channel ORA_DISK_1: restore complete, elapsed time: 00:00:01
+output file name=/u01/app/oracle/cdb1/control01.ctl
+output file name=/u01/app/oracle/cdb1/control02.ctl
+Finished restore at 17-JUL-24
+
+RMAN> EXIT
+
+XX 24.3 用sqlplus把DB狀態變為 MOUNT
+~~~
+sqlplus / as sysdba
+ALTER DATABASE MOUNT;
+EXIT;
+~~~
+
+XX 24.4 (失敗)
+~~~
+rman target /
+CATALOG START WITH '/tmp/';
+YES
+RESTORE DATABASE;
+RECOVER DATABASE;
+~~~
+
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX

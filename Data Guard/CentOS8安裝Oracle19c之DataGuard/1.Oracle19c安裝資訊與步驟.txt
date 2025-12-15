@@ -1,0 +1,209 @@
+安裝 Oracle 19c (19.3.0.0.0)
+
+OS: CentOS 8 (1905) minial (可以裝server with GUI)
+CPU: 2 core 
+RAM: 4 g  (swap 至少2G)
+HD: 50GB (只是做LAB而已,依實際生產預估調整)
+=================================
+兩台都要做
+1.關閉SELinux與防火牆
+# systemctl stop firewalld
+# systemctl disable firewalld
+# setenforce 0
+# vi /etc/selinux/config
+##
+SELINUX=permissive
+##
+
+2. FQDN設置 (DNS)
+# vi /etc/hosts
+192.168.56.41 o19dg1 o19dg1
+192.168.56.42 o19dg2 o19dg2
+
+3. 安裝預備前置 Packages
+# dnf install -y https://yum.oracle.com/repo/OracleLinux/OL8/baseos/latest/x86_64/getPackage/oracle-database-preinstall-19c-1.0-1.el8.x86_64.rpm
+# dnf install -y oracle-database-preinstall-19c
+# dnf install xterm -y
+
+4. OS oracle 密碼設置
+# passwd oracle
+oracle
+oracle
+
+5. 設定相關目錄
+mkdir -p /u01/app/oracle/product/19.0.0/dbhome_1
+mkdir -p /u02/oradata
+chown -R oracle:oinstall /u01 /u02
+chmod -R 775 /u01 /u02
+mkdir /home/oracle/scripts
+
+6. 設定變數與組態 (注意 ORACLE_HOSTNAME 要各自對應)
+# cat > /home/oracle/scripts/setEnv.sh <<EOF
+
+# Oracle Settings
+export TMP=/tmp
+export TMPDIR=\$TMP
+
+export ORACLE_HOSTNAME=o19dg1
+export ORACLE_UNQNAME=cdb1
+export ORACLE_BASE=/u01/app/oracle
+export ORACLE_HOME=\$ORACLE_BASE/product/19.0.0/dbhome_1
+export ORA_INVENTORY=/u01/app/oraInventory
+export ORACLE_SID=cdb1
+export PDB_NAME=pdb1
+export DATA_DIR=/u02/oradata
+
+export PATH=/usr/sbin:/usr/local/bin:\$PATH
+export PATH=\$ORACLE_HOME/bin:\$PATH
+
+export LD_LIBRARY_PATH=\$ORACLE_HOME/lib:/lib:/usr/lib
+export CLASSPATH=\$ORACLE_HOME/jlib:\$ORACLE_HOME/rdbms/jlib
+EOF
+
+# echo ". /home/oracle/scripts/setEnv.sh" >> /home/oracle/.bash_profile
+
+# cat > /home/oracle/scripts/start_all.sh <<EOF
+#!/bin/bash
+. /home/oracle/scripts/setEnv.sh
+
+export ORAENV_ASK=NO
+. oraenv
+export ORAENV_ASK=YES
+
+dbstart \$ORACLE_HOME
+EOF
+
+
+# cat > /home/oracle/scripts/stop_all.sh <<EOF
+#!/bin/bash
+. /home/oracle/scripts/setEnv.sh
+
+export ORAENV_ASK=NO
+. oraenv
+export ORAENV_ASK=YES
+
+dbshut \$ORACLE_HOME
+EOF
+
+# chown -R oracle:oinstall /home/oracle/scripts
+# chmod u+x /home/oracle/scripts/*.sh
+
+7. 解壓縮 安裝檔到 $ORACLE_HOME
+# mv LINUX.X64_193000_db_home.zip ~oracle/
+# chown oracle. ~oracle/LINUX.X64_193000_db_home.zip
+# su - oracle
+$ cd $ORACLE_HOME
+$ unzip -oq ~oracle/LINUX.X64_193000_db_home.zip
+### 使用偽裝版本來躲過非Oracle Linux的檢測
+$ export CV_ASSUME_DISTID=OEL7.6
+
+$ ./runInstaller (primary安裝軟體與DB standby只安裝軟體)
+
+
+8. 設定system service
+# cat > /lib/systemd/system/dbora.service <<EOF
+[Unit]
+Description=The Oracle Database Service
+After=syslog.target network.target
+
+[Service]
+# systemd ignores PAM limits, so set any necessary limits in the service.
+# Not really a bug, but a feature.
+# https://bugzilla.redhat.com/show_bug.cgi?id=754285
+LimitMEMLOCK=infinity
+LimitNOFILE=65535
+
+#Type=simple
+# idle: similar to simple, the actual execution of the service binary is delayed
+#       until all jobs are finished, which avoids mixing the status output with shell output of services.
+RemainAfterExit=yes
+User=oracle
+Group=oinstall
+Restart=no
+ExecStart=/bin/bash -c '/home/oracle/scripts/start_all.sh'
+ExecStop=/bin/bash -c '/home/oracle/scripts/stop_all.sh'
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+## 修改 /etc/oratab 把N改為Y,這樣dbstart才能正常運作
+vi /etc/oratab (找到 :N 改為 :Y)
+
+## 服務啟動測試 (剛安裝完是啟動的,記得手動關閉後才使用systemd)
+# systemctl start dbora.service
+# systemctl stop dbora.service
+
+9. 開啟 OMF (Oracle Managed Files) 當 instance啟動時 PDB也會啟動
+$ sqlplus / as sysdba <<EOF
+alter system set db_create_file_dest='${DATA_DIR}';
+alter pluggable database ${PDB_NAME} save state;
+exit;
+EOF
+
+################# 也可以用下面方式自動開啟 pdb #############
+9. 預設PDB 是不會自動啟動的(mount),所以要設置 cdb啟動時順便啟動(open)
+SQL> alter pluggable database all open;   
+SQL> alter pluggable database all save state;
+
+## 上面的 all 可以改為 pdb的名稱來個別指定
+##################################################################
+
+##### slient mode 安裝
+## 只有軟體安裝
+$ cat > go_install_silent.sh <<EOF
+#############
+#!bin/sh
+# Fake Oracle Linux 7.
+export CV_ASSUME_DISTID=OEL7.6
+
+# Silent mode.
+./runInstaller -ignorePrereq -waitforcompletion -silent                        \
+    -responseFile ${ORACLE_HOME}/install/response/db_install.rsp               \
+    oracle.install.option=INSTALL_DB_SWONLY                                    \
+    ORACLE_HOSTNAME=${ORACLE_HOSTNAME}                                         \
+    UNIX_GROUP_NAME=oinstall                                                   \
+    INVENTORY_LOCATION=${ORA_INVENTORY}                                        \
+    SELECTED_LANGUAGES=en,en_US                                                \
+    ORACLE_HOME=${ORACLE_HOME}                                                 \
+    ORACLE_BASE=${ORACLE_BASE}                                                 \
+    oracle.install.db.InstallEdition=EE                                        \
+    oracle.install.db.OSDBA_GROUP=dba                                          \
+    oracle.install.db.OSBACKUPDBA_GROUP=dba                                    \
+    oracle.install.db.OSDGDBA_GROUP=dba                                        \
+    oracle.install.db.OSKMDBA_GROUP=dba                                        \
+    oracle.install.db.OSRACDBA_GROUP=dba                                       \
+    SECURITY_UPDATES_VIA_MYORACLESUPPORT=false                                 \
+    DECLINE_SECURITY_UPDATES=true
+EOF 
+###############
+$ chmod +x go_install_silent.sh
+$ ./go_install_silent.sh
+
+## 安裝建置資料庫
+$ cat > go_build_db.sh
+##################
+#!/bin/sh
+# Start the listener.
+lsnrctl start
+
+# Silent mode.
+dbca -silent -createDatabase                                                   \
+     -templateName General_Purpose.dbc                                         \
+     -gdbname ${ORACLE_SID} -sid  ${ORACLE_SID} -responseFile NO_VALUE         \
+     -characterSet AL32UTF8                                                    \
+     -sysPassword SysPassword1                                                 \
+     -systemPassword SysPassword1                                              \
+     -createAsContainerDatabase true                                           \
+     -numberOfPDBs 1                                                           \
+     -pdbName ${PDB_NAME}                                                      \
+     -pdbAdminPassword PdbPassword1                                            \
+     -databaseType MULTIPURPOSE                                                \
+     -automaticMemoryManagement false                                          \
+     -totalMemory 2000                                                         \
+     -storageType FS                                                           \
+     -datafileDestination "${DATA_DIR}"                                        \
+     -redoLogFileSize 50                                                       \
+     -emConfiguration NONE                                                     \
+     -ignorePreReqs
+

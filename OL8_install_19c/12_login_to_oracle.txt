@@ -1,0 +1,13 @@
+###
+# ssh -X oracle@<host>
+# cd <Oracle Software Source>
+# ./runInstaller
+### jameslin mount test by root
+# mkdir /source
+# mount -t iso9660 -o loop /opt/Oracle10gR2_Linux_x86.ISO /source
+# /opt/Oracle10gR2_Linux_x86.ISO   /source   iso9660   loop,ro   0   0
+echo $ORACLE_HOME
+mkdir -p $ORACLE_HOME
+cd $ORACLE_HOME
+unzip -q /tmp/LINUX.X64_193000_db_home.zip
+./runInstaller

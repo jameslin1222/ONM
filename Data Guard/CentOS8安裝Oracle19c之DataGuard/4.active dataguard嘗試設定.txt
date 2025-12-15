@@ -1,0 +1,135 @@
+環境:
+兩台做Dataguard
+192.168.56.41 ora19c01 => cdb1 (master)
+192.168.56.42 ora19c02 => cdb1_stby (slave)
+FSFO 已經開啟
+sys/P_ssw0rd321
+
+目的: 把standby給設定唯讀,然後確認資料是否有同步
+================
+### 1.確認Slave的DB狀態
+~~~~
+sqlplus / as sysdba
+select open_mode from v$database;
+show pdbs
+~~~~
+SQL> select open_mode from v$database;
+
+OPEN_MODE
+--------------------
+READ ONLY WITH APPLY
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 PDB1                           MOUNTED
+SQL>
+
+
+============================
+### 2.把 pdb 狀態設定為唯讀
+~~~
+ALTER PLUGGABLE DATABASE pdb1 OPEN READ ONLY;
+show pdbs
+~~~
+SQL> ALTER PLUGGABLE DATABASE pdb1 OPEN READ ONLY;
+
+Pluggable database altered.
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 PDB1                           READ ONLY  NO
+SQL>
+
+============================
+### 3.切換到PDB那邊並且查看資料
+SQL> ALTER SESSION SET CONTAINER=pdb1;
+
+Session altered.
+
+SQL> SELECT * FROM t1;
+
+        ID
+----------
+       100
+       200
+
+SQL>
+
+
+
+============================
+### 4.Master那邊把資料新增 (開PDB那些我就省略了,只留重點)
+
+SQL> select open_mode from v$database;
+OPEN_MODE
+--------------------
+READ WRITE
+
+SQL> show con_name
+CON_NAME
+------------------------------
+PDB1
+SQL> SELECT * FROM t1;
+        ID
+----------
+       100
+       200
+
+SQL> INSERT INTO t1 VALUES(333);
+1 row created.
+SQL> COMMIT;
+Commit complete.
+
+SQL> SELECT * FROM t1;
+        ID
+----------
+       100
+       200
+       333
+
+SQL>
+
+
+============================
+### 5.在Slave那邊確認資料已經有同步 (完成)
+SQL> /
+
+        ID
+----------
+       100
+       200
+       333
+
+SQL>
+
+
+
+
+============================
+### Add01.把PDB給恢復為原本的 MOUNTED
+~~~
+ALTER PLUGGABLE DATABASE CLOSE;
+show pdbs
+~~~
+
+SQL> ALTER PLUGGABLE DATABASE CLOSE;
+
+Pluggable database altered.
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         3 PDB1                           MOUNTED
+SQL>
+
+
+
+
+

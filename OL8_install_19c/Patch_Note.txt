@@ -1,0 +1,15 @@
+1. OPatch 12.2.0.1.48 (p6880880) (*)
+p6880880_190000_Linux-x86-64
+
+2. 19.29 RU
+(建議用這個) 
+DB RU + OJVM => p38273545 (*)
+GI RU + OJVM => p38273558
+
+or 各自安裝
+GI RU 19.29.0.0.0 (p38298204) - GI
+DB RU 19.29.0.0.0 (p38291812) - DB
+OJVM RU 19.29.0.0.0 (p38194382) - OJVM
+
+=================
+$ ./runInstaller -applyRU /u01/app/oracle/patch/38298204
