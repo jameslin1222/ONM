@@ -1,0 +1,121 @@
+1. Primary:
+[oracle@db19c01 ~]$ sqlplus / as sysdba
+SQL> archive log list
+Database log mode              No Archive Mode
+Automatic archival             Disabled
+Archive destination            /u01/app/oracle/product/19.0.0/dbhome_1/dbs/arch
+Oldest online log sequence     13
+Current log sequence           15
+
+SQL> shutdown immediate;
+SQL> startup mount;
+SQL> alter database archivelog;
+SQL> alter database open;
+SQL> alter database force logging;
+SQL> alter system switch logfile;
+SQL> alter database flashback on;
+
+
+SQL> alter database add standby logfile ('/u02/oradata/CDB1/stby_redo01.log') size 200M;
+SQL> alter database add standby logfile ('/u02/oradata/CDB1/stby_redo02.log') size 200M;
+SQL> alter database add standby logfile ('/u02/oradata/CDB1/stby_redo03.log') size 200M;
+SQL> alter database add standby logfile ('/u02/oradata/CDB1/stby_redo04.log') size 200M;
+
+SQL> alter system set db_recovery_file_dest_size=50G scope=both sid='*';
+SQL> alter system set db_recovery_file_dest='/u02/oradata/CDB1' scope=both sid='*';
+
+SQL> alter system set standby_file_management=AUTO scope=both;
+SQL> alter system set standby_file_management=AUTO;
+SQL> exit
+
+
+[oracle@db19c01 ~]$ cd $ORACLE_HOME/network/admin
+[oracle@db19c01 admin]$ vi tnsnames.ora
+[oracle@db19c01 admin]$ cat tnsnames.ora
+~~~ 主要是這裡 ~~
+cdb1 =
+  (DESCRIPTION =
+    (ADDRESS_LIST =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = 192.168.56.19)(PORT = 1521))
+    )
+    (CONNECT_DATA =
+      (SID = cdb1)
+    )
+  )
+
+cdb1_stby =
+  (DESCRIPTION =
+    (ADDRESS_LIST =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = 192.168.56.20)(PORT = 1521))
+    )
+    (CONNECT_DATA =
+      (SID = cdb1)
+    )
+  )
+
+~~~~~~~~~~~~~~~~~
+
+
+[oracle@db19c01 admin]$ vi listener.ora
+[oracle@db19c01 admin]$ cat listener.ora
+~~~ 新增以下 ~~
+SID_LIST_LISTENER =
+  (SID_LIST =
+    (SID_DESC =
+      (GLOBAL_DBNAME = cdb1_DGMGRL)
+      (ORACLE_HOME = /u01/app/oracle/product/19.0.0/dbhome_1)
+      (SID_NAME = cdb1)
+      (ENVS="TNS_ADMIN=/u01/app/oracle/product/19.0.0/dbhome_1/network/admin")
+    )
+  )
+
+ADR_BASE_LISTENER = /u01/app/oracle
+~~~~~~~~~~~~~~~
+
+
+[oracle@db19c01 admin]$ lsnrctl stop
+[oracle@db19c01 admin]$ lsnrctl start
+....
+Listening Endpoints Summary...
+  (DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=db19c01)(PORT=1521)))
+  (DESCRIPTION=(ADDRESS=(PROTOCOL=ipc)(KEY=EXTPROC1521)))
+Services Summary...
+Service "cdb1_DGMGRL" has 1 instance(s).
+  Instance "cdb1", status UNKNOWN, has 1 handler(s) for this service...
+The command completed successfully
+[oracle@db19c01 admin]$
+
+
+
+[oracle@db19c01 admin]$ sqlplus / as sysdba
+SQL> show parameter dg_broker_start
+
+NAME                                 TYPE        VALUE
+------------------------------------ ----------- ------------------------------
+dg_broker_start                      boolean     FALSE
+SQL> ALTER SYSTEM SET dg_broker_start=true;
+
+System altered.
+
+SQL> CREATE pfile FROM spfile;
+
+File created.
+
+SQL> exit
+
+
+
+
+
+[oracle@db19c01 admin]$ scp $ORACLE_HOME/dbs/initcdb1.ora oracle@192.168.56.20:$ORACLE_HOME/dbs/
+
+
+(以前沒做，這個要補做，密碼不能有@ 否則到時會BUG失敗)
+[oracle@db19c01 admin]$ orapwd file=/u01/app/oracle/product/19.0.0/dbhome_1/dbs/orapwcdb1 password=P_ssw0rd123 entries=10 force=y
+[oracle@db19c01 admin]$
+[oracle@db19c01 admin]$ scp $ORACLE_HOME/dbs/orapwcdb1 oracle@192.168.56.20:$ORACLE_HOME/dbs/
+oracle@192.168.56.20's password:
+orapwcdb1                                     100% 6144     7.4MB/s   00:00
+[oracle@db19c01 admin]$
+
+

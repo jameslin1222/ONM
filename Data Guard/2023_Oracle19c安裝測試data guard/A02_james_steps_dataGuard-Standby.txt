@@ -1,0 +1,108 @@
+2.Standby
+
+(shutdown db and listener)
+[oracle@db19c02 ~]$ dbshut $ORACLE_HOME
+Processing Database instance "cdb1": log file /u01/app/oracle/product/19.0.0/dbhome_1/rdbms/log/shutdown.log
+[oracle@db19c02 ~]$
+
+
+
+[oracle@db19c02 u02]$ cd /u02/oradata/
+[oracle@db19c02 oradata]$ ls -l
+total 4
+drwxr-x---. 4 oracle oinstall 4096 Dec 15 23:15 CDB1
+[oracle@db19c02 oradata]$ rm -rf CDB1/
+[oracle@db19c02 oradata]$ mkdir CDB1
+[oracle@db19c02 oradata]$
+
+
+
+[oracle@db19c02 oradata]$ vi /tmp/initcdb1_stby.ora
+[oracle@db19c02 oradata]$ cat /tmp/initcdb1_stby.ora
+*.db_name='cdb1'
+[oracle@db19c02 oradata]$
+
+
+
+
+[oracle@db19c02 oradata]$ sqlplus / as sysdba
+SQL> CREATE spfile FROM pfile;
+
+File created.
+
+SQL> STARTUP NOMOUNT PFILE='/tmp/initcdb1_stby.ora';
+ORACLE instance started.
+
+Total System Global Area  306183456 bytes
+Fixed Size                  8895776 bytes
+Variable Size             239075328 bytes
+Database Buffers           50331648 bytes
+Redo Buffers                7880704 bytes
+SQL> exit
+
+
+[oracle@db19c02 admin]$ vi tnsnames.ora
+[oracle@db19c02 admin]$ cat tnsnames.ora
+~~~ 把原本 cdb1 改掉換成對照primary相同設定 ~~~
+cdb1 =
+  (DESCRIPTION =
+    (ADDRESS_LIST =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = 192.168.56.19)(PORT = 1521))
+    )
+    (CONNECT_DATA =
+      (SID = cdb1)
+    )
+  )
+
+cdb1_stby =
+  (DESCRIPTION =
+    (ADDRESS_LIST =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = 192.168.56.20)(PORT = 1521))
+    )
+    (CONNECT_DATA =
+      (SID = cdb1)
+    )
+  )
+
+
+
+~~~
+
+
+
+[oracle@db19c02 oradata]$ cd $ORACLE_HOME/network/admin
+[oracle@db19c02 admin]$ vi tnsnames.ora
+[oracle@db19c02 admin]$ cat tnsnames.ora
+~~~ 新增以下 ~~
+SID_LIST_LISTENER =
+  (SID_LIST =
+    (SID_DESC =
+      (GLOBAL_DBNAME = cdb1_stby_DGMGRL)
+      (ORACLE_HOME = /u01/app/oracle/product/19.0.0/dbhome_1)
+      (SID_NAME = cdb1)
+      (ENVS="TNS_ADMIN=/u01/app/oracle/product/19.0.0/dbhome_1/network/admin")
+    )
+  )
+
+ADR_BASE_LISTENER = /u01/app/oracle
+~~~~~~~~~~~~~~~
+
+[oracle@db19c02 admin]$ lsnrctl stop
+[oracle@db19c02 admin]$ lsnrctl start
+...
+Listening Endpoints Summary...
+  (DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=db19c02)(PORT=1521)))
+  (DESCRIPTION=(ADDRESS=(PROTOCOL=ipc)(KEY=EXTPROC1521)))
+Services Summary...
+Service "cdb1_stby_DGMGRL" has 1 instance(s).
+  Instance "cdb1", status UNKNOWN, has 1 handler(s) for this service...
+The command completed successfully
+[oracle@db19c02 admin]$
+
+
+
+
+
+
+
+

@@ -1,0 +1,33 @@
+3.Standby - RMAN
+
+3.1 rman 搭配 AUXILIARY
+[oracle@db19c02 admin]$ rman TARGET sys/P_ssw0rd123@cdb1 AUXILIARY sys/P_ssw0rd123@CDB1_stby
+
+Recovery Manager: Release 19.0.0.0.0 - Production on Tue Dec 16 01:12:42 2025
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle and/or its affiliates.  All rights reserved.
+
+connected to target database: CDB1 (DBID=1193680435)
+connected to auxiliary database: CDB1 (not mounted)
+
+
+3.2 使用以下語法來進行重建 (會等非常久..最好別遠端操作.用VNC等本機操作)
+RMAN> duplicate target database
+  for standby
+  from active database
+  dorecover
+  spfile
+    set db_unique_name='cdb1_stby' COMMENT 'Is standby'
+  nofilenamecheck;
+
+
+
+
+
+
+
+
+
+
+

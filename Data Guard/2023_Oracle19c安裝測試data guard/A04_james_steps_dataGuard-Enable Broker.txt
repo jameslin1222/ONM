@@ -1,0 +1,33 @@
+1. Primary and Standby 都要做:
+
+SQL> alter system set dg_broker_start=true;
+
+
+
+
+2. Primary
+2.1 dgmgrl 連入
+[oracle@db19c01 admin]$ dgmgrl sys/P_ssw0rd123@cdb1
+DGMGRL for Linux: Release 19.0.0.0.0 - Production on Tue Dec 16 01:21:29 2025
+Version 19.29.0.0.0
+
+Copyright (c) 1982, 2019, Oracle and/or its affiliates.  All rights reserved.
+
+Welcome to DGMGRL, type "help" for information.
+Connected to "cdb1"
+Connected as SYSDBA.
+DGMGRL>
+/* 這段不太懂... */
+DGMGRL> create configuration my_dg_config as primary database is cdb1 connect identifier is cdb1;
+Configuration "my_dg_config" created with primary database "cdb1"
+DGMGRL>
+
+
+2.2 加入standby database，並且啟動設定
+DGMGRL> add database cdb1_stby as connect identifier is cdb1_stby;
+Database "cdb1_stby" added
+DGMGRL> enable configuration;
+Enabled.
+DGMGRL>
+
+

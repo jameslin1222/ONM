@@ -1,0 +1,26 @@
+-- 檢查狀態 --
+[oracle@db19c01 admin]$ dgmgrl sys/P_ssw0rd123@cdb1
+DGMGRL for Linux: Release 19.0.0.0.0 - Production on Tue Dec 16 01:26:24 2025
+Version 19.29.0.0.0
+
+Copyright (c) 1982, 2019, Oracle and/or its affiliates.  All rights reserved.
+
+Welcome to DGMGRL, type "help" for information.
+Connected to "cdb1"
+Connected as SYSDBA.
+DGMGRL> 
+DGMGRL> show configuration;
+
+Configuration - my_dg_config
+
+  Protection Mode: MaxPerformance
+  Members:
+  cdb1      - Primary database
+    cdb1_stby - Physical standby database
+
+Fast-Start Failover:  Disabled
+
+Configuration Status:
+SUCCESS   (status updated 18 seconds ago)
+
+DGMGRL>

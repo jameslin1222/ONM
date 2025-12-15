@@ -1,0 +1,31 @@
+(以下做錯很多次，所以這整理起來不保證一定成功,可能要shutdown還有startup upgrade等等...)
+
+[oracle@db19c02 admin]$ sqlplus / as sysdba
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       MOUNTED
+         3 PDB1                           MOUNTED
+SQL> shutdown immediate;
+SQL> startup
+SQL> ALTER PLUGGABLE DATABASE pdb1 OPEN READ ONLY;
+
+Pluggable database altered.
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 PDB1                           READ ONLY  NO
+SQL> alter session set container=pdb1;
+
+Session altered.
+
+SQL> select * from t1;
+
+        ID
+----------
+       999
+
